@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(node:*)",
+      "Bash(jq:*)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:claude.com)",
+      "WebFetch(domain:www.merge.dev)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:apxml.com)"
+    ]
+  }
+}
