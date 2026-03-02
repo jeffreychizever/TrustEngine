@@ -91,6 +91,52 @@ You should be prompted to approve 3-4 `grant_permission` requests. The agent sho
 - Choose **session** scope (not one-off) for operations it may repeat
 - Scope destructive commands to `/tmp/trustengine-demo/`
 
+Sample output:
+```
+● trustengine - grant_permission (MCP)(tool: "Bash", match: {"command":"^git (init|add|commit)"}, scope: "session", session_id: "a8794eac-df4e-467d-9ea9-64591776715c",
+                                      description: "Allow git init, add, and commit commands", justification: "User requested git init, add, and commit in
+                                      /tmp/trustengine-demo. These are local-only git operations (no push/remote) in an isolated temp directory.")
+  ⎿  Permission granted (session):
+       Rule ID: grant-842d6345
+       Tool: Bash
+     … +6 lines (ctrl+o to expand)
+
+● trustengine - grant_permission (MCP)(tool: "Bash", match: {"command":"^cd /tmp/"}, scope: "session", session_id: "a8794eac-df4e-467d-9ea9-64591776715c", description:
+                                      "Allow cd into /tmp/ subdirectories", justification: "Need to cd into /tmp/trustengine-demo before running git commands. Scoped to
+                                      /tmp/ only.")
+  ⎿  Permission granted (session):
+       Rule ID: grant-cac06f43
+       Tool: Bash
+     … +5 lines (ctrl+o to expand)
+
+● Now let me retry the git operations.
+
+● Bash(cd /tmp/trustengine-demo && git init && git add -A && git commit -m "Initial commit: hello.js and API response")
+  ⎿  hint: Using 'master' as the name for the initial branch. This default branch name
+     hint: is subject to change. To configure the initial branch name to use in all
+     hint: of your new repositories, which will suppress this warning, call:
+     … +12 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /home/jeffreychizever/workspace
+
+● Git repo initialized and committed. Now for the final cleanup.
+
+● Bash(rm -rf /tmp/trustengine-demo)
+  ⎿  Done
+
+● All 7 steps completed:
+
+  1. Created directory structure — /tmp/trustengine-demo/ with src/ and build/
+  2. Wrote src/hello.js — logs "Hello from TrustEngine demo"
+  3. Ran with node — output verified: Hello from TrustEngine demo
+  4. Fetched httpbin.org/json — got sample slideshow JSON via curl
+  5. Saved to build/api-response.json — 21-line JSON response
+  6. Git init + commit — committed both files on master (930dd74)
+  7. Cleaned up — removed /tmp/trustengine-demo entirely
+
+  Along the way, TrustEngine required session-scoped grants for curl (network access), git (init/add/commit), cd (into /tmp), and rm -rf (destructive cleanup) — all
+  properly scoped to the demo directory and task.
+```
+
 ## Default Policies
 
 ### Auto-Allowed
