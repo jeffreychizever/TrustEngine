@@ -11,7 +11,6 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { PoliciesFile, TrustRule, KnownRisk } from "./types.js";
-import { is_safe_regex } from "./engine.js";
 import {
     add_session_grant,
     read_session_breadcrumb,
@@ -549,7 +548,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ["remove_safe_directory", remove_safe],
             ["remove_unsafe_directory", remove_unsafe],
         ] as const) {
-            if (path && !path.startsWith("/")) {
+            if (path && !path.startsWith("/") && path !== "$CWD" && path !== "$NOTCWD") {
                 return {
                     content: [{
                         type: "text" as const,
@@ -793,18 +792,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
 
-    if (!is_safe_regex(tool)) {
-        return {
-            content: [
-                {
-                    type: "text" as const,
-                    text: `Error: Tool pattern "${tool}" is potentially unsafe (ReDoS risk). Use a simpler pattern.`,
-                },
-            ],
-            isError: true,
-        };
-    }
-
     if (is_overly_broad(tool)) {
         return {
             content: [
@@ -860,17 +847,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         {
                             type: "text" as const,
                             text: `Error: Invalid regex for match parameter "${param}": "${pattern}"`,
-                        },
-                    ],
-                    isError: true,
-                };
-            }
-            if (!is_safe_regex(pattern)) {
-                return {
-                    content: [
-                        {
-                            type: "text" as const,
-                            text: `Error: Match pattern for "${param}" is potentially unsafe (ReDoS risk). Use a simpler pattern.`,
                         },
                     ],
                     isError: true,

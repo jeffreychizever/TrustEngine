@@ -22,16 +22,6 @@
             "description": "Block pipe-to-shell execution patterns"
         },
         {
-            "id": "deny-write-outside-cwd",
-            "tool": "Write|Edit",
-            "match": {
-                "file_path": "^(?!$CWD)"
-            },
-            "action": "deny",
-            "priority": 81,
-            "description": "Block writes outside the current working directory"
-        },
-        {
             "id": "allow-read-tools",
             "tool": "Read|Glob|Grep|WebSearch|WebFetch",
             "action": "allow",
@@ -46,14 +36,24 @@
             "description": "Allow agent orchestration tools"
         },
         {
-            "id": "allow-write-in-cwd",
+            "id": "allow-write-in-safe",
             "tool": "Write|Edit",
             "match": {
-                "file_path": "^$CWD/"
+                "file_path": "^$SAFE/"
             },
             "action": "allow",
             "priority": 70,
-            "description": "Allow writes within the current working directory"
+            "description": "Allow writes within safe directories"
+        },
+        {
+            "id": "deny-write-in-unsafe",
+            "tool": "Write|Edit",
+            "match": {
+                "file_path": "^$UNSAFE/"
+            },
+            "action": "deny",
+            "priority": 90,
+            "description": "Block writes within unsafe directories"
         },
         {
             "id": "allow-safe-bash",

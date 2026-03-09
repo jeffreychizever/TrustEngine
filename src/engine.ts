@@ -16,42 +16,6 @@ export async function load_policies(path: string): Promise<PoliciesFile> {
     return data;
 }
 
-export function is_safe_regex(pattern: string): boolean {
-    // Reject patterns with nested quantifiers that can cause catastrophic backtracking
-    // e.g. (a+)+, (a*)*,  (a+)*, (\w+)+, etc.
-    const nested_quantifier = /([+*]|\{\d+,?\d*\})\s*\)([+*?]|\{\d+,?\d*\})/;
-    if (nested_quantifier.test(pattern)) return false;
-
-    // Reject patterns with overlapping alternations under quantifiers
-    // e.g. (a|a)+, (\w|\d)+ — simplified check for common cases
-    const overlapping_alt = /\(([^)]*\|[^)]*)\)([+*]|\{\d+,?\d*\})/;
-    if (overlapping_alt.test(pattern)) {
-        // Test the pattern with a pathological string to check timing
-        try {
-            const re = new RegExp(pattern);
-            const test_str = "a".repeat(25);
-            const start = Date.now();
-            re.test(test_str);
-            if (Date.now() - start > 100) return false;
-        } catch {
-            return false;
-        }
-    }
-
-    // Timing test: run the regex against a moderately long string
-    try {
-        const re = new RegExp(pattern);
-        const test_str = "aaaaaaaaaaaaaaaaaaaaaaaaa!";
-        const start = Date.now();
-        re.test(test_str);
-        if (Date.now() - start > 100) return false;
-    } catch {
-        return false;
-    }
-
-    return true;
-}
-
 export function substitute_variables(
     pattern: string,
     cwd: string,
@@ -59,22 +23,32 @@ export function substitute_variables(
     unsafe_dirs?: string[],
 ): string {
     const escaped_cwd = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    let result = pattern.replace(/\$CWD/g, escaped_cwd);
+
+    let result = pattern.replace(/\$NOTCWD/g, `(?!${escaped_cwd}/)`);
+    result = result.replace(/\$CWD/g, escaped_cwd);
+
+    const resolve_dir = (d: string): string => {
+        // $NOTCWD is a regex-level macro — expand it directly, not as a path
+        if (d === "$NOTCWD") return `(?!${escaped_cwd}/)`;
+        const resolved = d.replace(/\$CWD/g, cwd);
+        return resolved.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    };
 
     if (safe_dirs && safe_dirs.length > 0) {
-        const escaped = safe_dirs.map((d) =>
-            d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-        );
+        const escaped = safe_dirs.map(resolve_dir);
         const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
         result = result.replace(/\$SAFE/g, alt);
+    } else {
+        // Replace $SAFE with a pattern that never matches any real path
+        result = result.replace(/\$SAFE/g, "\\x00NOMATCH");
     }
 
     if (unsafe_dirs && unsafe_dirs.length > 0) {
-        const escaped = unsafe_dirs.map((d) =>
-            d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-        );
+        const escaped = unsafe_dirs.map(resolve_dir);
         const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
         result = result.replace(/\$UNSAFE/g, alt);
+    } else {
+        result = result.replace(/\$UNSAFE/g, "\\x00NOMATCH");
     }
 
     return result;
@@ -89,7 +63,6 @@ export function matches_rule(
     unsafe_dirs?: string[],
 ): boolean {
     const tool_pattern = substitute_variables(rule.tool, cwd, safe_dirs, unsafe_dirs);
-    if (!is_safe_regex(tool_pattern)) return false;
     try {
         if (!new RegExp(`^(?:${tool_pattern})$`).test(tool_name)) {
             return false;
@@ -105,7 +78,6 @@ export function matches_rule(
                 return false;
             }
             const substituted = substitute_variables(pattern, cwd, safe_dirs, unsafe_dirs);
-            if (!is_safe_regex(substituted)) return false;
             try {
                 if (!new RegExp(substituted).test(String(value))) {
                     return false;

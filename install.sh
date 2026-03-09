@@ -38,6 +38,31 @@ case "$MODE" in
 esac
 echo
 
+echo "Directory trust settings for Write/Edit operations:"
+echo "  Policies include 'allow-write-in-safe' and 'deny-write-in-unsafe' rules."
+echo "  Safe directories are explicitly allowed; unsafe directories are denied."
+echo "  Directories not in either list are normal (governed by other rules)."
+echo
+
+read -rp "Treat /tmp as a safe directory? [Y/n]: " TMP_SAFE
+case "$TMP_SAFE" in
+    [Nn]) TMP_SAFE="n"; echo "  /tmp: normal" ;;
+    *)    TMP_SAFE="y"; echo "  /tmp: safe" ;;
+esac
+
+read -rp "Treat CWD as a safe directory? [Y/n]: " CWD_SAFE
+case "$CWD_SAFE" in
+    [Nn]) CWD_SAFE="n"; echo "  CWD: normal" ;;
+    *)    CWD_SAFE="y"; echo "  CWD: safe" ;;
+esac
+
+read -rp "Treat outside of CWD as unsafe? [Y/n]: " NOTCWD_UNSAFE
+case "$NOTCWD_UNSAFE" in
+    [Nn]) NOTCWD_UNSAFE="n"; echo "  Outside CWD: normal" ;;
+    *)    NOTCWD_UNSAFE="y"; echo "  Outside CWD: unsafe" ;;
+esac
+echo
+
 # 1. Install dependencies and build
 echo "[1/5] Installing dependencies and building..."
 cd "$SCRIPT_DIR"
@@ -74,6 +99,40 @@ else
     cp "$SCRIPT_DIR/default-policies.json" "$CONFIG_DIR/policies.json"
     echo "  Copied default policies to $CONFIG_DIR/policies.json"
 fi
+
+# Apply directory trust settings
+TMP_SAFE="$TMP_SAFE" CWD_SAFE="$CWD_SAFE" NOTCWD_UNSAFE="$NOTCWD_UNSAFE" POLICIES="$CONFIG_DIR/policies.json" node -e "
+const fs = require('fs');
+const policies = JSON.parse(fs.readFileSync(process.env.POLICIES, 'utf-8'));
+const tmpSafe = process.env.TMP_SAFE === 'y';
+const cwdSafe = process.env.CWD_SAFE === 'y';
+const notcwdUnsafe = process.env.NOTCWD_UNSAFE === 'y';
+
+// Build safe_directories
+const safeDirs = [];
+if (tmpSafe) safeDirs.push('/tmp');
+if (cwdSafe) safeDirs.push('\$CWD');
+if (safeDirs.length > 0) {
+    policies.safe_directories = safeDirs;
+    console.log('  Safe directories: ' + safeDirs.join(', '));
+} else {
+    delete policies.safe_directories;
+    console.log('  No safe directories');
+}
+
+// Build unsafe_directories
+const unsafeDirs = [];
+if (notcwdUnsafe) unsafeDirs.push('\$NOTCWD');
+if (unsafeDirs.length > 0) {
+    policies.unsafe_directories = unsafeDirs;
+    console.log('  Unsafe directories: ' + unsafeDirs.join(', '));
+} else {
+    delete policies.unsafe_directories;
+    console.log('  No unsafe directories');
+}
+
+fs.writeFileSync(process.env.POLICIES, JSON.stringify(policies, null, 4));
+"
 echo
 
 # 4. Add PreToolUse hook + permissions to ~/.claude/settings.json
@@ -171,6 +230,12 @@ else
     echo "Claude's built-in prompts + TrustEngine's hook will both gate tool calls."
     echo "Once you're confident TrustEngine works as expected, re-run with mode 1."
 fi
+echo
+echo "Directory trust:"
+if [ "$TMP_SAFE" = "y" ]; then echo "  /tmp: safe"; else echo "  /tmp: normal"; fi
+if [ "$CWD_SAFE" = "y" ]; then echo "  CWD: safe"; else echo "  CWD: normal"; fi
+if [ "$NOTCWD_UNSAFE" = "y" ]; then echo "  Outside CWD: unsafe"; else echo "  Outside CWD: normal"; fi
+echo "Use grant_permission to add/remove safe and unsafe directories."
 echo
 echo "Restart Claude Code to apply changes."
 echo

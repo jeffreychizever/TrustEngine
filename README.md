@@ -45,7 +45,15 @@ PreToolUse Hook ──reads──> policies.json + session grants
 ### Installation
 
 ```bash
-git clone <repo-url> && cd TrustEngine
+npm install -g @jeffreychizever/trustengine
+cd "$(npm root -g)/@jeffreychizever/trustengine"
+./install.sh
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/jeffreychizever/TrustEngine.git && cd TrustEngine
 ./install.sh
 ```
 
@@ -53,10 +61,16 @@ The installer will:
 1. Build TypeScript and install dependencies
 2. Create config directory (`~/.config/trustengine/`)
 3. Copy default policies
-4. Add the PreToolUse hook to `~/.claude/settings.json`
-5. Add the MCP server to `~/.claude.json`
+4. Configure directory trust (safe/unsafe classification for `/tmp`, `$CWD`, outside CWD)
+5. Add the PreToolUse hook to `~/.claude/settings.json`
+6. Add the MCP server to `~/.claude.json`
 
 Choose **Full mode** to replace Claude's built-in permissions with TrustEngine, or **Belt-and-suspenders mode** to run both systems in parallel while you validate.
+
+The installer also asks how to classify directories for Write/Edit operations:
+- **/tmp** — safe (allowed) or normal (default: safe)
+- **CWD** — safe (allowed) or normal (default: safe)
+- **Outside CWD** — unsafe (denied) or normal (default: unsafe)
 
 Restart Claude Code after installation.
 
@@ -80,7 +94,7 @@ What you should see:
 | Step | Tool | TrustEngine Decision | Why |
 |------|------|---------------------|-----|
 | 1 | `Bash: mkdir -p` | Auto-allowed | `mkdir` is a safe command |
-| 2 | `Write` to `/tmp/...` | **Denied** → grant needed | Outside `$CWD` |
+| 2 | `Write` to `/tmp/...` | Auto-allowed or grant needed | Depends on whether `/tmp` is in `$SAFE` |
 | 3 | `Bash: node src/hello.js` | Auto-allowed | `node` is a safe command |
 | 4 | `Bash: curl` | **Denied** with risk warning | Network request risk |
 | 5 | `Write` or `cp` | May need grant | Depends on approach |
@@ -144,14 +158,14 @@ Sample output:
 ### Auto-Allowed
 - Read, Glob, Grep, WebSearch, WebFetch (read-only tools)
 - Agent orchestration tools (Agent, TaskCreate, etc.)
-- Write/Edit within `$CWD/` (local project files)
+- Write/Edit within safe directories (`$SAFE` — configurable, defaults to `/tmp` and `$CWD`)
 - Safe bash commands (ls, git status, npm test, node, etc.)
 - npm install, local git mutations (add, commit, checkout)
 
 ### Auto-Denied
 - Destructive bash (`rm -rf /`, `sudo`, `mkfs`, fork bombs)
 - Pipe-to-shell patterns (`curl | bash`)
-- Write/Edit outside `$CWD/`
+- Write/Edit within unsafe directories (`$UNSAFE` — configurable, defaults to `$NOTCWD`)
 
 ### Known Risks (deny + require justification)
 - `git push` — modifies shared remote state
@@ -260,7 +274,7 @@ Policies live at `~/.config/trustengine/policies.json`:
 ### Rule Fields
 - **id**: Unique identifier
 - **tool**: Regex matching tool name
-- **match**: Optional dict of parameter regex patterns (`$CWD` is substituted)
+- **match**: Optional dict of parameter regex patterns (`$CWD`, `$SAFE`, `$UNSAFE`, `$NOTCWD` are substituted)
 - **action**: `allow` or `deny`
 - **priority**: Higher = evaluated first. Deny wins at equal priority. Grants get priority 95.
 - **description**: Human-readable explanation
@@ -281,4 +295,4 @@ This prevents bypass attempts like `ls && rm -rf /` — both sub-commands are ev
 - **Risk-aware**: Known risks override allow rules, requiring explicit acknowledgment
 - **Structured matchers**: Agent specifies command names + path prefixes instead of writing raw regex
 - **Pre-validated**: Invalid grant requests are rejected before reaching the human
-- **Portable**: `$CWD` substitution makes rules work across projects
+- **Portable**: `$CWD`, `$SAFE`, `$UNSAFE`, and `$NOTCWD` substitution makes rules work across projects

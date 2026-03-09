@@ -138,8 +138,8 @@ async function run(): Promise<void> {
                     ["remove_safe_directory", remove_safe],
                     ["remove_unsafe_directory", remove_unsafe],
                 ] as const) {
-                    if (path && !path.startsWith("/")) {
-                        errors.push(`'${label}' must be an absolute path. Got: "${path}"`);
+                    if (path && !path.startsWith("/") && path !== "$CWD" && path !== "$NOTCWD") {
+                        errors.push(`'${label}' must be an absolute path, $CWD, or $NOTCWD. Got: "${path}"`);
                     }
                 }
 
