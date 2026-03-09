@@ -25,20 +25,22 @@ export interface TrustRule {
     description: string;
     scope?: "permanent" | "session" | "once";
     acknowledged_risks?: string[];
-    risks_acknowledged?: boolean;
 }
 
 export interface KnownRisk {
+    id: string;
     tool: string;
     match?: Record<string, string>;
     risk: string;
-    severity: "low" | "medium" | "high";
+    severity: "block" | "escalate" | "acknowledge";
 }
 
 export interface PoliciesFile {
     version: number;
     rules: TrustRule[];
     known_risks: KnownRisk[];
+    safe_directories?: string[];
+    unsafe_directories?: string[];
 }
 
 export interface SessionFile {

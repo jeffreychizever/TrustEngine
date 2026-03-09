@@ -1,0 +1,59 @@
+# TrustEngine — Grant Permission Guide
+
+Your tool calls are evaluated against policies which model the safety of different commands and different directories, and detail known risks. When a call fails, you can request permissions for that call using the grant_permission tool.
+In general, read-only operations are safe and should be allowed all the time, and same with writes in the working directory. Anything off-host, system level,
+or destructive requires justification and acknowledgement of risks. The end goal is to provide a high signal to noise ratio for permissions prompts, so you need to balance generality and safety in your permissions requests.
+
+"scope" can be once, session, or permanent; strive to make all permissions safe to enable permanently, but when it's not possible to craft a safe rule (e.g. for arbitrary input to a python interpreter) you can just get session or one-off privileges.
+
+## Basic usage
+- **tool**: Regex matching the tool name (e.g., "Bash", "Write|Edit")
+- **scope**: "once" | "session" | "permanent"
+- **command_names**: ["rm", "rmdir"] — which commands to allow
+- **path_prefix**: "/tmp/test/" — restrict to this directory (required for destructive commands)
+- **allowed_flags**: ["-r", "-f", "--force"] — which flags are permitted (omit to allow none)
+- **justification**: Why this is needed and safe (min 10 chars)
+- **description**: Human-readable rule description (e.g., "Allow curl to fetch API docs")
+- **session_id**: Required for once/session scopes (check your deny message for the ID)
+
+## Regex matchers for complex rules
+Use raw **match** for advanced cases the structured format can't express. When crafting the regex, try to be particular about flags and directories.
+- **match**: Dict of param regex patterns (e.g., {"command": "^git push"})
+
+## Directory Classification
+You can classify directories as "safe" or "unsafe" to use with $SAFE and $UNSAFE path variables in rules.
+- **add_safe_directory**: "/path/to/dir" — mark a directory as safe (more permissive)
+- **add_unsafe_directory**: "/path/to/dir" — mark a directory as unsafe (more restrictive)
+- **remove_safe_directory** / **remove_unsafe_directory**: Remove a classification
+
+Anything allowed for $UNSAFE paths also applies to normal ($CWD) and $SAFE paths. Only justification is required for directory management (no tool/scope/description needed).
+
+## Known Risks
+Each known risk has a severity tier that determines how to handle it:
+
+- **block**: Hard deny — no override possible. Do not attempt to work around these.
+- **escalate**: Requires human approval — call grant_permission with acknowledged_risks listing the risk IDs.
+- **acknowledge**: Agent can self-serve — call acknowledge_risk with the risk IDs. No human prompt needed.
+
+When denied due to risks, the deny message tells you which tier each risk is and which tool to call.
+
+### For grant_permission (escalate risks):
+- **known_risks**: Only for permanent rules — records NEW risks for future deny-and-acknowledge flow. e.g. [{"id": "risk-timeout", "risk": "this command may take hours", "severity": "acknowledge"}]
+- **acknowledged_risks**: Array of risk IDs you're aware of (e.g., ["risk-git-push"]). The human reviewing the grant can see which risks you understand.
+
+### For acknowledge_risk (acknowledge risks):
+- **risk_ids**: Array of risk IDs to acknowledge (e.g., ["risk-rm", "risk-file-overwrite"])
+- **tool**: The tool this applies to (e.g., "Bash")
+- **match**: Optional match patterns to scope it (e.g., {"command": "^rm"})
+
+## Trusted Scripts
+For complex operations that are hard to model with regex, use **script** mode in grant_permission.
+The human reviews the exact script content before approving.
+
+- **script**: Full script content (include a shebang, e.g., #!/bin/bash)
+- **script_interpreter**: "bash" (default) | "python" | "python3" | "node" | "sh"
+- **scope**: once/session/permanent — controls how long the script is approved for
+- **description**, **justification**: Required as usual
+
+On approval, TrustEngine writes the script to a trusted directory and returns the command to run it.
+The scripts directory is protected — agents cannot write to it directly.

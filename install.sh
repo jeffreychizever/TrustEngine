@@ -54,10 +54,22 @@ echo "  Created: $CONFIG_DIR"
 echo "  Created: $SESSIONS_DIR"
 echo
 
-# 3. Copy default policies (skip if exists)
+# 3. Copy default policies (skip if exists, unless --force)
 echo "[3/5] Setting up default policies..."
+FORCE=0
+for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then
+        FORCE=1
+    fi
+done
+
+if [ "$FORCE" -eq 1 ] && [ -f "$CONFIG_DIR/policies.json" ]; then
+    rm "$CONFIG_DIR/policies.json"
+    echo "  Removed existing policies.json (--force)"
+fi
+
 if [ -f "$CONFIG_DIR/policies.json" ]; then
-    echo "  Skipped: $CONFIG_DIR/policies.json already exists"
+    echo "  Skipped: $CONFIG_DIR/policies.json already exists (use --force to overwrite)"
 else
     cp "$SCRIPT_DIR/default-policies.json" "$CONFIG_DIR/policies.json"
     echo "  Copied default policies to $CONFIG_DIR/policies.json"

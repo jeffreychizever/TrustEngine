@@ -1,6 +1,8 @@
 # TrustEngine
 
-Policy-driven trust enforcement for agentic AI tools. Provides granular control over which tool calls are allowed, denied, or require explicit justification — keeping the human in control while letting the agent self-serve within safe boundaries.
+Policy-driven trust enforcement for agentic AI tools.
+
+Current state-of-the-art agentic tools require a handcrafted permission policy that's loaded at session startup. TrustEngine evaluates just-in-time, and allows the agent to request new permissions, removing some of the cognitive load of trust policy management and mitigating prompt fatigue. TrustEngine also allows risks to be recorded alongside a command, requiring the agent to consider the risks before executing a command.
 
 ## How It Works
 

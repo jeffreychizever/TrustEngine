@@ -1,0 +1,116 @@
+<%# ──────────────────────────────────────────────────────────────────── %>
+<%# Deny guidance template                                             %>
+<%# Shown to the agent when a tool call is denied by TrustEngine.      %>
+<%# Edit this file to customize the messages.                          %>
+<%#                                                                    %>
+<%# Available variables:                                               %>
+<%#   tool_name        — the denied tool (e.g. "Bash", "Write")        %>
+<%#   session_id       — current session ID                            %>
+<%#   mode             — "bash" | "write_edit" | "generic"             %>
+<%#   block_risks      — [{id, severity}] — hard blocked, no override  %>
+<%#   escalate_risks   — [{id, severity}] — needs grant_permission     %>
+<%#   ack_risks        — [{id, severity}] — needs acknowledge_risk     %>
+<%#                                                                    %>
+<%# Bash mode:                                                         %>
+<%#   cmd_names_json   — JSON array of denied command names            %>
+<%#   path_prefix      — common path prefix (or null)                  %>
+<%#                                                                    %>
+<%# Write/Edit mode:                                                   %>
+<%#   escaped_dir      — regex-escaped directory of the target file    %>
+<%# ──────────────────────────────────────────────────────────────────── %>
+If this is your first TrustEngine denial, call check_permission(help=true) to learn the system before requesting access.
+<% if (block_risks.length > 0) { -%>
+
+This action is blocked by known risks that cannot be overridden:
+<% for (const r of block_risks) { -%>
+  - <%-r.id %>
+<% } -%>
+No path forward — this action is not permitted.
+<% } -%>
+<% if (ack_risks.length > 0) { -%>
+
+The following risks can be acknowledged without human approval:
+<% for (const r of ack_risks) { -%>
+  - <%-r.id %>
+<% } -%>
+
+Call acknowledge_risk to proceed:
+  risk_ids: <%-JSON.stringify(ack_risks.map(r => r.id)) %>
+  tool: "<%-tool_name %>"
+<% } -%>
+<% if (escalate_risks.length > 0) { -%>
+
+The following risks require human approval:
+<% for (const r of escalate_risks) { -%>
+  - <%-r.id %>
+<% } -%>
+<% if (mode === "bash") { -%>
+
+Suggested grant_permission call (use structured matchers, not raw regex):
+  tool: "Bash"
+  command_names: <%-cmd_names_json %>
+<% if (path_prefix) { -%>
+  path_prefix: "<%-path_prefix %>"
+<% } else { -%>
+  path_prefix: "<required — scope to the relevant directory>"
+<% } -%>
+  allowed_flags: [] (add any needed flags like "-r", "-f", "--force")
+  acknowledged_risks: <%-JSON.stringify(escalate_risks.map(r => r.id)) %>
+  scope: "session" (or "permanent" if the user will always need this)
+  session_id: "<%-session_id %>"
+  description: <what this allows>
+  justification: <why this is needed and safe>
+<% } else if (mode === "write_edit") { -%>
+
+Suggested grant_permission call:
+  tool: "<%-tool_name %>"
+  match: {"file_path": "^<%-escaped_dir %>"}
+  acknowledged_risks: <%-JSON.stringify(escalate_risks.map(r => r.id)) %>
+  scope: "session"
+  session_id: "<%-session_id %>"
+  description: <what this allows>
+  justification: <why this is needed and safe>
+<% } else { -%>
+
+Call grant_permission to request access:
+  tool: "<%-tool_name %>"
+  acknowledged_risks: <%-JSON.stringify(escalate_risks.map(r => r.id)) %>
+  scope: "session"
+  session_id: "<%-session_id %>"
+  description: <what this allows>
+  justification: <why this is needed and safe>
+<% } -%>
+<% } -%>
+<% if (block_risks.length === 0 && escalate_risks.length === 0 && ack_risks.length === 0) { -%>
+<% if (mode === "bash") { -%>
+
+Suggested grant_permission call (use structured matchers, not raw regex):
+  tool: "Bash"
+  command_names: <%-cmd_names_json %>
+<% if (path_prefix) { -%>
+  path_prefix: "<%-path_prefix %>"
+<% } else { -%>
+  path_prefix: "<required — scope to the relevant directory>"
+<% } -%>
+  allowed_flags: [] (add any needed flags like "-r", "-f", "--force")
+  scope: "session" (or "permanent" if the user will always need this)
+  session_id: "<%-session_id %>"
+  description: <what this allows>
+  justification: <why this is needed and safe>
+<% } else if (mode === "write_edit") { -%>
+
+Suggested grant_permission call:
+  tool: "<%-tool_name %>"
+  match: {"file_path": "^<%-escaped_dir %>"}
+  scope: "session"
+  session_id: "<%-session_id %>"
+  description: <what this allows>
+  justification: <why this is needed and safe>
+<% } else { -%>
+
+Call grant_permission to request access.
+  tool: "<%-tool_name %>"
+  scope: "session"
+  session_id: "<%-session_id %>"
+<% } -%>
+<% } -%>

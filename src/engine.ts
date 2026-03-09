@@ -52,9 +52,32 @@ export function is_safe_regex(pattern: string): boolean {
     return true;
 }
 
-export function substitute_variables(pattern: string, cwd: string): string {
+export function substitute_variables(
+    pattern: string,
+    cwd: string,
+    safe_dirs?: string[],
+    unsafe_dirs?: string[],
+): string {
     const escaped_cwd = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return pattern.replace(/\$CWD/g, escaped_cwd);
+    let result = pattern.replace(/\$CWD/g, escaped_cwd);
+
+    if (safe_dirs && safe_dirs.length > 0) {
+        const escaped = safe_dirs.map((d) =>
+            d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        );
+        const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
+        result = result.replace(/\$SAFE/g, alt);
+    }
+
+    if (unsafe_dirs && unsafe_dirs.length > 0) {
+        const escaped = unsafe_dirs.map((d) =>
+            d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        );
+        const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
+        result = result.replace(/\$UNSAFE/g, alt);
+    }
+
+    return result;
 }
 
 export function matches_rule(
@@ -62,8 +85,10 @@ export function matches_rule(
     tool_name: string,
     tool_input: Record<string, unknown>,
     cwd: string,
+    safe_dirs?: string[],
+    unsafe_dirs?: string[],
 ): boolean {
-    const tool_pattern = substitute_variables(rule.tool, cwd);
+    const tool_pattern = substitute_variables(rule.tool, cwd, safe_dirs, unsafe_dirs);
     if (!is_safe_regex(tool_pattern)) return false;
     try {
         if (!new RegExp(`^(?:${tool_pattern})$`).test(tool_name)) {
@@ -79,7 +104,7 @@ export function matches_rule(
             if (value === undefined || value === null) {
                 return false;
             }
-            const substituted = substitute_variables(pattern, cwd);
+            const substituted = substitute_variables(pattern, cwd, safe_dirs, unsafe_dirs);
             if (!is_safe_regex(substituted)) return false;
             try {
                 if (!new RegExp(substituted).test(String(value))) {
@@ -99,10 +124,12 @@ export function find_matching_risks(
     tool_name: string,
     tool_input: Record<string, unknown>,
     cwd: string,
+    safe_dirs?: string[],
+    unsafe_dirs?: string[],
 ): KnownRisk[] {
     const matched: KnownRisk[] = [];
     for (const risk of risks) {
-        const tool_pattern = substitute_variables(risk.tool, cwd);
+        const tool_pattern = substitute_variables(risk.tool, cwd, safe_dirs, unsafe_dirs);
         try {
             if (!new RegExp(`^(?:${tool_pattern})$`).test(tool_name)) {
                 continue;
@@ -119,7 +146,7 @@ export function find_matching_risks(
                     all_match = false;
                     break;
                 }
-                const substituted = substitute_variables(pattern, cwd);
+                const substituted = substitute_variables(pattern, cwd, safe_dirs, unsafe_dirs);
                 try {
                     if (!new RegExp(substituted).test(String(value))) {
                         all_match = false;
@@ -175,6 +202,76 @@ export function split_bash_command(command: string): string[] {
 
         if (in_single_quote || in_double_quote) {
             current += ch;
+            continue;
+        }
+
+        // Heredoc detection: <<[-]?['"]?WORD['"]?
+        // Consume everything until WORD appears on its own line
+        if (
+            ch === "<" &&
+            i + 1 < command.length &&
+            command[i + 1] === "<" &&
+            paren_depth === 0
+        ) {
+            current += "<<";
+            let j = i + 2;
+            // Optional '-' for tab-stripping heredocs
+            if (j < command.length && command[j] === "-") {
+                current += "-";
+                j++;
+            }
+            // Skip whitespace between << and delimiter
+            while (j < command.length && command[j] === " ") {
+                current += " ";
+                j++;
+            }
+            // Extract delimiter (strip surrounding quotes if present)
+            let delimiter = "";
+            const quote_ch = j < command.length ? command[j] : "";
+            if (quote_ch === "'" || quote_ch === '"') {
+                current += quote_ch;
+                j++;
+                while (j < command.length && command[j] !== quote_ch) {
+                    delimiter += command[j];
+                    current += command[j];
+                    j++;
+                }
+                if (j < command.length) {
+                    current += command[j]; // closing quote
+                    j++;
+                }
+            } else {
+                while (j < command.length && /[a-zA-Z0-9_]/.test(command[j])) {
+                    delimiter += command[j];
+                    current += command[j];
+                    j++;
+                }
+            }
+
+            // Now consume everything until delimiter appears on its own line
+            if (delimiter) {
+                while (j < command.length) {
+                    current += command[j];
+                    // Check if we're at a newline followed by the delimiter on its own line
+                    if (command[j] === "\n") {
+                        const remaining = command.slice(j + 1);
+                        if (
+                            remaining === delimiter ||
+                            remaining.startsWith(delimiter + "\n") ||
+                            remaining.startsWith(delimiter + "\r")
+                        ) {
+                            // Consume the delimiter
+                            for (let k = 0; k < delimiter.length; k++) {
+                                j++;
+                                current += command[j];
+                            }
+                            break;
+                        }
+                    }
+                    j++;
+                }
+            }
+            i = j;
             continue;
         }
 
@@ -390,6 +487,8 @@ function evaluate_single(
     tool_name: string,
     tool_input: Record<string, unknown>,
     cwd: string,
+    safe_dirs?: string[],
+    unsafe_dirs?: string[],
 ): EvaluationResult {
     // Sort: highest priority first, deny before allow at same priority
     const sorted = [...all_rules].sort((a, b) => {
@@ -401,36 +500,43 @@ function evaluate_single(
 
     // Find first matching rule
     for (const rule of sorted) {
-        if (matches_rule(rule, tool_name, tool_input, cwd)) {
+        if (matches_rule(rule, tool_name, tool_input, cwd, safe_dirs, unsafe_dirs)) {
             const risk_warnings = find_matching_risks(
                 known_risks,
                 tool_name,
                 tool_input,
                 cwd,
+                safe_dirs,
+                unsafe_dirs,
             );
 
             if (rule.action === "allow" && risk_warnings.length > 0) {
-                // If the rule has blanket risk acknowledgment (human-approved grant), skip
-                if (rule.risks_acknowledged) {
-                    // All risks acknowledged — fall through to allow
-                } else {
-                    // Filter out risks that were individually acknowledged
-                    const ack = new Set(rule.acknowledged_risks ?? []);
-                    const unacknowledged = risk_warnings.filter(
-                        (r) => !ack.has(r.risk),
-                    );
-
-                    if (unacknowledged.length > 0) {
-                        // Unacknowledged risks remain — deny with risk info
-                        return {
-                            decision: "deny",
-                            matched_rule: rule,
-                            risk_warnings: unacknowledged,
-                            reason: `Allowed by rule "${rule.description}" but blocked due to known risks: ${unacknowledged.map((r) => r.risk).join("; ")}`,
-                        };
-                    }
-                    // All risks individually acknowledged — fall through to allow
+                // "block" tier risks are unconditional — no acknowledgement possible
+                const blockers = risk_warnings.filter((r) => r.severity === "block");
+                if (blockers.length > 0) {
+                    return {
+                        decision: "deny",
+                        matched_rule: rule,
+                        risk_warnings: blockers,
+                        reason: `Blocked by known risks (no override possible): ${blockers.map((r) => `${r.id} (${r.risk})`).join("; ")}`,
+                    };
                 }
+
+                // "escalate" and "acknowledge" risks can be acknowledged by ID
+                const ack = new Set(rule.acknowledged_risks ?? []);
+                const unacknowledged = risk_warnings.filter(
+                    (r) => !ack.has(r.id),
+                );
+
+                if (unacknowledged.length > 0) {
+                    return {
+                        decision: "deny",
+                        matched_rule: rule,
+                        risk_warnings: unacknowledged,
+                        reason: `Allowed by rule "${rule.description}" but blocked due to unacknowledged risks: ${unacknowledged.map((r) => `${r.id} (${r.risk})`).join("; ")}`,
+                    };
+                }
+                // All risks acknowledged by ID — fall through to allow
             }
 
             return {
@@ -451,6 +557,8 @@ function evaluate_single(
         tool_name,
         tool_input,
         cwd,
+        safe_dirs,
+        unsafe_dirs,
     );
 
     const risk_suffix =
@@ -474,6 +582,8 @@ export function evaluate(
     cwd: string,
 ): EvaluationResult {
     const all_rules = [...policies.rules, ...session_grants];
+    const safe_dirs = policies.safe_directories;
+    const unsafe_dirs = policies.unsafe_directories;
 
     // Special handling for Bash tool: evaluate each sub-command independently
     if (tool_name === "Bash" && typeof tool_input.command === "string") {
@@ -487,6 +597,8 @@ export function evaluate(
             tool_name,
             tool_input,
             cwd,
+            safe_dirs,
+            unsafe_dirs,
         );
         if (full_deny.decision === "deny" && full_deny.matched_rule) {
             return full_deny;
@@ -515,6 +627,8 @@ export function evaluate(
                 tool_name,
                 sub_input,
                 cwd,
+                safe_dirs,
+                unsafe_dirs,
             );
 
             if (result.decision === "deny") {
@@ -567,5 +681,7 @@ export function evaluate(
         tool_name,
         tool_input,
         cwd,
+        safe_dirs,
+        unsafe_dirs,
     );
 }

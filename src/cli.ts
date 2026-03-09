@@ -31,7 +31,7 @@ async function cmd_list(): Promise<void> {
         console.log("  (none)\n");
     } else {
         for (const risk of policies.known_risks) {
-            console.log(`  [${risk.severity.toUpperCase()}] ${risk.tool}`);
+            console.log(`  [${risk.severity.toUpperCase()}] ${risk.id} — ${risk.tool}`);
             if (risk.match) {
                 console.log(`    Match: ${JSON.stringify(risk.match)}`);
             }

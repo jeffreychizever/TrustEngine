@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { appendFile, realpath } from "node:fs/promises";
+import { appendFile, realpath, writeFile, mkdir } from "node:fs/promises";
 import type { HookInput, HookOutput } from "./types.js";
 import { load_policies, evaluate } from "./engine.js";
 import {
@@ -8,6 +8,7 @@ import {
     consume_once_grant,
     write_session_breadcrumb,
 } from "./session_store.js";
+import { build_deny_guidance } from "./deny_guidance.js";
 
 const POLICIES_PATH = join(homedir(), ".config", "trustengine", "policies.json");
 const DEBUG_LOG = "/tmp/trustengine-debug.log";
@@ -56,92 +57,6 @@ function make_allow_output(): HookOutput {
     };
 }
 
-function extract_common_path(sub_commands: string[]): string | null {
-    // Extract path arguments from commands like "rm /tmp/foo" → "/tmp/foo"
-    const paths: string[] = [];
-    for (const cmd of sub_commands) {
-        const match = cmd.match(/\s+(\/\S+)/);
-        if (match) paths.push(match[1]);
-    }
-    if (paths.length === 0) return null;
-
-    // Find common directory prefix
-    const dirs = paths.map((p) => p.substring(0, p.lastIndexOf("/") + 1));
-    let common = dirs[0];
-    for (const dir of dirs.slice(1)) {
-        while (common && !dir.startsWith(common)) {
-            common = common.substring(0, common.lastIndexOf("/", common.length - 2) + 1);
-        }
-    }
-    return common || null;
-}
-
-function build_deny_guidance(
-    tool_name: string,
-    tool_input: Record<string, unknown>,
-    denied_commands: string[] | undefined,
-    denied_sub_commands: string[] | undefined,
-    session_id: string,
-): string {
-    const lines: string[] = [];
-
-    // First-time nudge
-    lines.push(
-        `If this is your first TrustEngine denial, call grant_permission(help=true) to learn the system before requesting access.`,
-    );
-
-    // Generate a concrete suggested grant_permission call
-    if (tool_name === "Bash" && denied_commands && denied_commands.length > 0) {
-        const unique_cmds = [...new Set(denied_commands)];
-        const cmd_names_json = JSON.stringify(unique_cmds);
-
-        // Try to extract a common path to scope the pattern
-        const common_path = denied_sub_commands
-            ? extract_common_path(denied_sub_commands)
-            : null;
-
-        lines.push(
-            `\nSuggested grant_permission call (use structured matchers, not raw regex):\n` +
-            `  tool: "Bash"\n` +
-            `  command_names: ${cmd_names_json}\n` +
-            (common_path
-                ? `  path_prefix: "${common_path}"\n`
-                : `  path_prefix: "<required — scope to the relevant directory>"\n`) +
-            `  allowed_flags: [] (add any needed flags like "-r", "-f", "--force")\n` +
-            `  scope: "session" (or "permanent" if the user will always need this)\n` +
-            `  session_id: "${session_id}"\n` +
-            `  description: <what this allows>\n` +
-            `  justification: <why this is needed and safe>`,
-        );
-    } else if (
-        (tool_name === "Write" || tool_name === "Edit") &&
-        typeof tool_input.file_path === "string"
-    ) {
-        const fp = tool_input.file_path as string;
-        const dir = fp.substring(0, fp.lastIndexOf("/") + 1);
-        const escaped_dir = dir.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&");
-
-        lines.push(
-            `\nSuggested grant_permission call:\n` +
-            `  tool: "${tool_name}"\n` +
-            `  match: {"file_path": "^${escaped_dir}"}\n` +
-            `  scope: "session"\n` +
-            `  session_id: "${session_id}"\n` +
-            `  description: <what this allows>\n` +
-            `  justification: <why this is needed and safe>`,
-        );
-    } else {
-        lines.push(
-            `\nCall grant_permission to request access.\n` +
-            `  tool: "${tool_name}"\n` +
-            `  scope: "session"\n` +
-            `  session_id: "${session_id}"`,
-        );
-    }
-
-    return lines.join("\n");
-}
-
 async function run(): Promise<void> {
     await debug("Hook invoked");
     let input: HookInput;
@@ -180,8 +95,9 @@ async function run(): Promise<void> {
             return;
         }
 
-        // grant_permission: help mode is read-only, auto-allow it
-        if (tool_name === "mcp__trustengine__grant_permission" && tool_input.help === true) {
+        // acknowledge_risk is for "acknowledge" tier risks — auto-allow it
+        // (the MCP server validates that only acknowledge-tier risks are accepted)
+        if (tool_name === "mcp__trustengine__acknowledge_risk") {
             const output = make_allow_output();
             process.stdout.write(JSON.stringify(output));
             return;
@@ -189,6 +105,13 @@ async function run(): Promise<void> {
 
         // grant_permission: validate before asking the human
         if (tool_name === "mcp__trustengine__grant_permission") {
+            // Help mode is read-only, auto-allow it
+            if (tool_input.help === true) {
+                const output = make_allow_output();
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
+
             const scope = tool_input.scope as string | undefined;
             const desc = tool_input.description as string | undefined;
             const justification = tool_input.justification as string | undefined;
@@ -197,7 +120,111 @@ async function run(): Promise<void> {
             const command_names = tool_input.command_names as string[] | undefined;
             const path_prefix = tool_input.path_prefix as string | undefined;
 
-            // Pre-validate: reject obviously invalid requests before bothering the human
+            // Directory management mode — different validation
+            const add_safe = tool_input.add_safe_directory as string | undefined;
+            const add_unsafe = tool_input.add_unsafe_directory as string | undefined;
+            const remove_safe = tool_input.remove_safe_directory as string | undefined;
+            const remove_unsafe = tool_input.remove_unsafe_directory as string | undefined;
+            const is_dir_mgmt = !!(add_safe || add_unsafe || remove_safe || remove_unsafe);
+
+            if (is_dir_mgmt) {
+                const errors: string[] = [];
+                if (!justification || justification.length < 10) {
+                    errors.push("'justification' is required (min 10 chars)");
+                }
+                for (const [label, path] of [
+                    ["add_safe_directory", add_safe],
+                    ["add_unsafe_directory", add_unsafe],
+                    ["remove_safe_directory", remove_safe],
+                    ["remove_unsafe_directory", remove_unsafe],
+                ] as const) {
+                    if (path && !path.startsWith("/")) {
+                        errors.push(`'${label}' must be an absolute path. Got: "${path}"`);
+                    }
+                }
+
+                if (errors.length > 0) {
+                    const output = make_deny_output(
+                        `TrustEngine: invalid directory management request:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+                    );
+                    process.stdout.write(JSON.stringify(output));
+                    return;
+                }
+
+                // Build a human-readable summary of the proposed changes
+                const changes: string[] = [];
+                if (add_safe) changes.push(`Add "${add_safe}" to safe directories`);
+                if (add_unsafe) changes.push(`Add "${add_unsafe}" to unsafe directories`);
+                if (remove_safe) changes.push(`Remove "${remove_safe}" from safe directories`);
+                if (remove_unsafe) changes.push(`Remove "${remove_unsafe}" from unsafe directories`);
+
+                const output: HookOutput = {
+                    hookSpecificOutput: {
+                        hookEventName: "PreToolUse",
+                        permissionDecision: "ask",
+                        permissionDecisionReason:
+                            `TrustEngine: Agent requests directory classification change:\n` +
+                            changes.map((c) => `  - ${c}`).join("\n") +
+                            (justification ? `\nJustification: ${justification}` : ""),
+                    },
+                };
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
+
+            // Script mode — show script content to human for review
+            const script_content = tool_input.script as string | undefined;
+            if (script_content) {
+                const script_errors: string[] = [];
+                if (!scope || !["once", "session", "permanent"].includes(scope)) {
+                    script_errors.push("'scope' is required");
+                }
+                if (!justification || justification.length < 10) {
+                    script_errors.push("'justification' is required (min 10 chars)");
+                }
+                if (!desc) {
+                    script_errors.push("'description' is required");
+                }
+                if (script_errors.length > 0) {
+                    const output = make_deny_output(
+                        `TrustEngine: invalid script request:\n${script_errors.map((e) => `  - ${e}`).join("\n")}`,
+                    );
+                    process.stdout.write(JSON.stringify(output));
+                    return;
+                }
+
+                const interpreter = (tool_input.script_interpreter as string | undefined) ?? "bash";
+                const ack_risks = tool_input.acknowledged_risks as string[] | undefined;
+
+                // Write script to a temp file so the human can review it with proper formatting
+                const review_dir = join(homedir(), ".config", "trustengine", "review");
+                await mkdir(review_dir, { recursive: true });
+                const ext_map: Record<string, string> = {
+                    bash: "sh", sh: "sh", python: "py", python3: "py", node: "mjs",
+                };
+                const ext = ext_map[interpreter] ?? "sh";
+                const review_path = join(review_dir, `pending.${ext}`);
+                await writeFile(review_path, script_content, "utf-8");
+
+                const output: HookOutput = {
+                    hookSpecificOutput: {
+                        hookEventName: "PreToolUse",
+                        permissionDecision: "ask",
+                        permissionDecisionReason:
+                            `TrustEngine: Agent requests ${scope} permission to run a script` +
+                            (desc ? ` — ${desc}` : "") +
+                            (justification ? `\nJustification: ${justification}` : "") +
+                            (ack_risks && ack_risks.length > 0
+                                ? `\nAcknowledged risks: ${ack_risks.join(", ")}`
+                                : "") +
+                            `\nReview script: cat ${review_path}`,
+                    },
+                };
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
+
+            // Normal rule grant — pre-validate
             const errors: string[] = [];
 
             if (!tool_pattern) errors.push("'tool' is required");
@@ -234,6 +261,7 @@ async function run(): Promise<void> {
             }
 
             // Valid request — ask the human
+            const ack_risks = tool_input.acknowledged_risks as string[] | undefined;
             const output: HookOutput = {
                 hookSpecificOutput: {
                     hookEventName: "PreToolUse",
@@ -241,14 +269,17 @@ async function run(): Promise<void> {
                     permissionDecisionReason:
                         `TrustEngine: Agent requests ${scope} permission for "${tool_pattern}"` +
                         (desc ? ` — ${desc}` : "") +
-                        (justification ? `\nJustification: ${justification}` : ""),
+                        (justification ? `\nJustification: ${justification}` : "") +
+                        (ack_risks && ack_risks.length > 0
+                            ? `\nAcknowledged risks: ${ack_risks.join(", ")}`
+                            : ""),
                 },
             };
             process.stdout.write(JSON.stringify(output));
             return;
         }
 
-        // Self-protection: hard-deny writes to policies.json
+        // Self-protection: hard-deny writes to policies.json and scripts directory
         if (
             (tool_name === "Write" || tool_name === "Edit") &&
             typeof tool_input.file_path === "string"
@@ -261,9 +292,16 @@ async function run(): Promise<void> {
                 process.stdout.write(JSON.stringify(output));
                 return;
             }
+            if (target.includes("/trustengine/scripts/")) {
+                const output = make_deny_output(
+                    "TrustEngine: the scripts directory is protected. Use grant_permission(script=...) to create approved scripts.",
+                );
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
         }
 
-        // Self-protection: hard-deny Bash commands that reference policies.json
+        // Self-protection: hard-deny Bash commands that modify policies.json
         if (
             tool_name === "Bash" &&
             typeof tool_input.command === "string"
@@ -331,17 +369,19 @@ async function run(): Promise<void> {
 
         if (result.risk_warnings.length > 0) {
             const risks = result.risk_warnings
-                .map((r) => `[${r.severity.toUpperCase()}] ${r.risk}`)
+                .map((r) => `[${r.severity}] ${r.id}: ${r.risk}`)
                 .join("\n");
             context += `Known risks:\n${risks}\n\n`;
         }
 
+        const risks = result.risk_warnings.map((r) => ({ id: r.id, severity: r.severity }));
         context += build_deny_guidance(
             tool_name,
             tool_input as Record<string, unknown>,
             result.denied_commands,
             result.denied_sub_commands,
             session_id,
+            risks,
         );
 
         const output = make_deny_output(deny_reason, context);

@@ -5,7 +5,7 @@
             "id": "deny-dangerous-bash",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)(sudo\\b|doas\\b|pkexec\\b|su\\s+-c\\b|rm\\s+(-\\w+\\s+)*/($|\\s)|mkfs\\b|dd\\s+if=|chmod\\s+-R\\s+777\\s+/($|\\s)|chown\\s+-R\\s+.*\\s+/($|\\s)|:(){ :|:& };:)"
+                "command": "(^|[;&|] *)(sudo\\b|doas\\b|pkexec\\b|su +-c\\b|rm +(-\\w+ +)*/($| )|mkfs\\b|dd +if=|chmod +-R +777 +/($| )|chown +-R +.* +/($| )|:(){ :|:& };:)"
             },
             "action": "deny",
             "priority": 100,
@@ -15,7 +15,7 @@
             "id": "deny-pipe-to-shell",
             "tool": "Bash",
             "match": {
-                "command": "(curl|wget)\\s+.*\\|\\s*(bash|sh|zsh)"
+                "command": "(curl|wget) +.*\\| *(bash|sh|zsh)"
             },
             "action": "deny",
             "priority": 100,
@@ -40,7 +40,7 @@
         },
         {
             "id": "allow-agent-tools",
-            "tool": "Agent|TaskCreate|TaskUpdate|TaskGet|TaskList|AskUserQuestion|EnterPlanMode|ExitPlanMode|Skill|NotebookEdit",
+            "tool": "Agent|TaskCreate|TaskUpdate|TaskGet|TaskList|TaskOutput|TaskStop|AskUserQuestion|EnterPlanMode|ExitPlanMode|EnterWorktree|Skill|NotebookEdit|ToolSearch|CronCreate|CronDelete|CronList",
             "action": "allow",
             "priority": 80,
             "description": "Allow agent orchestration tools"
@@ -59,7 +59,7 @@
             "id": "allow-safe-bash",
             "tool": "Bash",
             "match": {
-                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|env|printenv|set|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq|sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|grep|rg|ag|ack|jq|yq|column|less|more|man|help|info|tree|git\\s+(status|log|diff|show|branch|tag|remote|fetch|stash|ls-files|rev-parse|describe|config\\s+--get|config\\s+--list|blame|shortlog|reflog)|npm\\s+(test|run|ls|list|outdated|audit|info|view|explain|why|pack\\s+--dry-run)|npx|node\\s+(--version|-v)|yarn\\s+(test|run|list|info|why)|pnpm\\s+(test|run|list|ls|why)|bun\\s+(test|run)|cargo\\s+(test|check|clippy|build|bench|doc|fmt)|rustc\\s+--version|go\\s+(test|vet|build|run|fmt|doc)|python3?\\s+-m\\s+(pytest|unittest|json\\.tool|py_compile|compileall)|pip\\s+(list|show|freeze)|pip3\\s+(list|show|freeze)|ruby\\s+-c|bundle\\s+(exec|list|show|info)|rake\\s+|rspec|java\\s+--version|javac\\s+--version|mvn\\s+(test|verify|compile|package)|gradle\\s+(test|check|build)|make\\s|cmake\\s|gcc\\s+--version|g\\+\\+\\s+--version|clang\\s+--version|docker\\s+(ps|images|logs|inspect|version)|kubectl\\s+(get|describe|logs|version)|terraform\\s+(plan|validate|fmt)|tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|black|isort|gofmt|rustfmt|mkdir|touch|cp|mv|ln)\\b"
+                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|env|printenv|set|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq|sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|grep|rg|ag|ack|jq|yq|column|less|more|man|help|info|tree|git +(status|log|diff|show|branch|tag|remote|fetch|stash|ls-files|rev-parse|describe|config +--get|config +--list|blame|shortlog|reflog|init)|npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|npx|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run)|cargo +(test|check|clippy|build|bench|doc|fmt)|rustc +--version|go +(test|vet|build|run|fmt|doc)|python3? +-m +(pytest|unittest|json\\.tool|py_compile|compileall)|pip +(list|show|freeze)|pip3 +(list|show|freeze)|ruby +-c|bundle +(exec|list|show|info)|rake +|rspec|java +--version|javac +--version|mvn +(test|verify|compile|package)|gradle +(test|check|build)|make |cmake |gcc +--version|g\\+\\+ +--version|clang +--version|docker +(ps|images|logs|inspect|version)|kubectl +(get|describe|logs|version)|terraform +(plan|validate|fmt)|tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|black|isort|gofmt|rustfmt|mkdir|touch|cp|mv|ln)\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -69,7 +69,7 @@
             "id": "allow-npm-install",
             "tool": "Bash",
             "match": {
-                "command": "^npm\\s+(install|ci|i)\\b"
+                "command": "^npm +(install|ci|i)\\b"
             },
             "action": "allow",
             "priority": 55,
@@ -79,7 +79,7 @@
             "id": "allow-git-commit",
             "tool": "Bash",
             "match": {
-                "command": "^git\\s+(add|commit|checkout|switch|merge|rebase|cherry-pick|reset\\s+--soft|stash\\s+(pop|apply|drop))\\b"
+                "command": "^git +(add|commit|checkout|switch|merge|rebase|cherry-pick|reset +--soft|stash +(pop|apply|drop))\\b"
             },
             "action": "allow",
             "priority": 55,
@@ -88,60 +88,67 @@
     ],
     "known_risks": [
         {
+            "id": "risk-git-push",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)git\\s+push\\b"
+                "command": "(^|[;&|] *)git +push\\b"
             },
             "risk": "git push modifies shared remote state — others may pull these changes",
-            "severity": "medium"
+            "severity": "escalate"
         },
         {
+            "id": "risk-git-destructive",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)git\\s+(reset\\s+--hard|rebase|push\\s+--force|push\\s+-f)\\b"
+                "command": "(^|[;&|] *)git +(reset +--hard|rebase|push +--force|push +-f)\\b"
             },
             "risk": "Destructive git history rewrite — can lose commits and affect collaborators",
-            "severity": "high"
+            "severity": "escalate"
         },
         {
+            "id": "risk-network",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)(curl|wget)\\b"
+                "command": "(^|[;&|] *)(curl|wget)\\b"
             },
             "risk": "Network request — may exfiltrate data or download untrusted content",
-            "severity": "medium"
+            "severity": "escalate"
         },
         {
+            "id": "risk-rm",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)rm\\b"
+                "command": "(^|[;&|] *)rm\\b"
             },
             "risk": "File deletion is irreversible — verify targets carefully",
-            "severity": "medium"
+            "severity": "acknowledge"
         },
         {
+            "id": "risk-env-secrets",
             "tool": "Write|Edit",
             "match": {
                 "file_path": "\\.env"
             },
             "risk": ".env files may contain secrets — edits could expose credentials",
-            "severity": "high"
+            "severity": "escalate"
         },
         {
+            "id": "risk-npm-publish",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)npm\\s+publish\\b"
+                "command": "(^|[;&|] *)npm +publish\\b"
             },
             "risk": "npm publish pushes packages to public registry — this is irreversible",
-            "severity": "high"
+            "severity": "block"
         },
         {
+            "id": "risk-file-overwrite",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|]\\s*)(cp|mv|ln)\\b"
+                "command": "(^|[;&|] *)(cp|mv|ln)\\b"
             },
             "risk": "cp/mv/ln can overwrite files or create misleading symlinks — verify targets carefully",
-            "severity": "medium"
+            "severity": "acknowledge"
         }
     ]
 }
