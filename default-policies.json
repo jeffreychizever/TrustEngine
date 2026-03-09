@@ -28,7 +28,7 @@
                 "file_path": "^(?!$CWD)"
             },
             "action": "deny",
-            "priority": 90,
+            "priority": 81,
             "description": "Block writes outside the current working directory"
         },
         {
@@ -121,7 +121,7 @@
                 "command": "(^|[;&|] *)rm\\b"
             },
             "risk": "File deletion is irreversible — verify targets carefully",
-            "severity": "acknowledge"
+            "severity": "escalate"
         },
         {
             "id": "risk-env-secrets",
