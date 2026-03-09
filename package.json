@@ -1,26 +1,37 @@
 {
-    "name": "trustengine",
-    "version": "1.0.0",
-    "description": "Policy-driven trust enforcement for agentic AI tools",
-    "type": "module",
-    "main": "dist/hook.js",
-    "bin": {
-        "trustengine": "dist/cli.js"
-    },
-    "scripts": {
-        "build": "tsc",
-        "hook": "node dist/hook.js",
-        "mcp": "node dist/mcp_server.js",
-        "cli": "node dist/cli.js"
-    },
-    "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.12.1",
-        "ejs": "^5.0.1",
-        "zod": "^3.24.4"
-    },
-    "devDependencies": {
-        "@types/ejs": "^3.1.5",
-        "@types/node": "^25.3.3",
-        "typescript": "^5.7.3"
-    }
+  "name": "@jeffreychizever/trustengine",
+  "version": "1.0.0",
+  "description": "Policy-driven trust enforcement for agentic AI tools",
+  "type": "module",
+  "main": "dist/hook.js",
+  "bin": {
+    "trustengine": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "hook": "node dist/hook.js",
+    "mcp": "node dist/mcp_server.js",
+    "cli": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "ejs": "^5.0.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/ejs": "^3.1.5",
+    "@types/node": "^25.3.3",
+    "typescript": "^5.7.3"
+  },
+  "types": "./dist/hook.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeffreychizever/TrustEngine.git"
+  },
+  "author": "Jeffrey Chizever (jeffreychizever@gmail.com)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jeffreychizever/TrustEngine/issues"
+  },
+  "homepage": "https://github.com/jeffreychizever/TrustEngine#readme"
 }
