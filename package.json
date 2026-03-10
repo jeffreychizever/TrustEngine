@@ -1,6 +1,6 @@
 {
   "name": "@jeffreychizever/trustengine",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Policy-driven trust enforcement for agentic AI tools",
   "type": "module",
   "main": "dist/hook.js",
