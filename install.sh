@@ -121,15 +121,15 @@ if (safeDirs.length > 0) {
 }
 
 // Build unsafe_directories
-const unsafeDirs = [];
+// Always include the TrustEngine config dir — the deny-write-in-unsafe rule
+// (priority 90) beats grant_permission grants (priority 85), so the agent
+// cannot grant itself Write/Edit access to policies.json.
+// Bash-level protection is still hardcoded in the hook for full coverage.
+const configDir = require('path').join(require('os').homedir(), '.config', 'trustengine');
+const unsafeDirs = [configDir];
 if (notcwdUnsafe) unsafeDirs.push('\$NOTCWD');
-if (unsafeDirs.length > 0) {
-    policies.unsafe_directories = unsafeDirs;
-    console.log('  Unsafe directories: ' + unsafeDirs.join(', '));
-} else {
-    delete policies.unsafe_directories;
-    console.log('  No unsafe directories');
-}
+policies.unsafe_directories = unsafeDirs;
+console.log('  Unsafe directories: ' + unsafeDirs.join(', '));
 
 fs.writeFileSync(process.env.POLICIES, JSON.stringify(policies, null, 4));
 "
@@ -150,26 +150,24 @@ try { settings = JSON.parse(fs.readFileSync(path, 'utf-8')); } catch {}
 if (!settings.hooks) settings.hooks = {};
 if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
 
-// Check if hook already configured
+// Remove any existing TrustEngine hooks (handles path changes from reinstalls)
 const hookCmd = process.env.HOOK_COMMAND;
-const exists = settings.hooks.PreToolUse.some(
-    h => Array.isArray(h.hooks) && h.hooks.some(hh => hh.command === hookCmd)
+settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(
+    h => !Array.isArray(h.hooks) || !h.hooks.some(hh => typeof hh.command === 'string' && hh.command.includes('trustengine'))
 );
-if (!exists) {
-    settings.hooks.PreToolUse.push({
-        matcher: '.*',
-        hooks: [
-            {
-                type: 'command',
-                command: hookCmd,
-                timeout: 10
-            }
-        ]
-    });
-    console.log('  Added PreToolUse hook');
-} else {
-    console.log('  Hook already configured');
-}
+
+// Add the hook with the current path
+settings.hooks.PreToolUse.push({
+    matcher: '.*',
+    hooks: [
+        {
+            type: 'command',
+            command: hookCmd,
+            timeout: 10
+        }
+    ]
+});
+console.log('  Set PreToolUse hook: ' + hookCmd);
 
 // Full mode: auto-allow standard tools so TrustEngine is the sole gate
 if (mode === '1') {

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { appendFile, realpath, writeFile, mkdir } from "node:fs/promises";
 import type { HookInput, HookOutput } from "./types.js";
 import { load_policies, evaluate } from "./engine.js";
@@ -10,7 +11,10 @@ import {
 } from "./session_store.js";
 import { build_deny_guidance } from "./deny_guidance.js";
 
-const POLICIES_PATH = join(homedir(), ".config", "trustengine", "policies.json");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const INSTALL_DIR = join(__dirname, "..");
+const CONFIG_DIR = join(homedir(), ".config", "trustengine");
+const POLICIES_PATH = join(CONFIG_DIR, "policies.json");
 const DEBUG_LOG = "/tmp/trustengine-debug.log";
 
 async function resolve_file_path(file_path: string): Promise<string> {
@@ -279,7 +283,27 @@ async function run(): Promise<void> {
             return;
         }
 
-        // Self-protection: hard-deny writes to policies.json and scripts directory
+        // Load policies early so self-protection can reference unsafe_directories
+        const policies = await load_policies(POLICIES_PATH);
+
+        // Build the list of protected paths for hardcoded self-protection.
+        // This covers both Write/Edit and Bash commands referencing these paths.
+        const protected_paths = [CONFIG_DIR, INSTALL_DIR];
+        if (policies.unsafe_directories) {
+            for (const dir of policies.unsafe_directories) {
+                // Resolve macros to concrete paths for string matching
+                if (dir === "$CWD") {
+                    protected_paths.push(cwd);
+                } else if (dir === "$NOTCWD") {
+                    // $NOTCWD is regex-level — handled by the deny-write-in-unsafe rule, not here
+                    continue;
+                } else if (!dir.includes("$")) {
+                    protected_paths.push(dir);
+                }
+            }
+        }
+
+        // Self-protection: hard-deny writes to protected directories
         if (
             (tool_name === "Write" || tool_name === "Edit") &&
             typeof tool_input.file_path === "string"
@@ -299,20 +323,29 @@ async function run(): Promise<void> {
                 process.stdout.write(JSON.stringify(output));
                 return;
             }
+            if (target.startsWith(INSTALL_DIR + "/")) {
+                const output = make_deny_output(
+                    "TrustEngine: the installation directory is protected. Do not modify TrustEngine's source or built files.",
+                );
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
         }
 
-        // Self-protection: hard-deny Bash commands that modify policies.json
+        // Self-protection: hard-deny Bash commands that reference protected paths
         if (
             tool_name === "Bash" &&
             typeof tool_input.command === "string"
         ) {
             const cmd = tool_input.command as string;
-            if (cmd.includes("trustengine/policies.json")) {
-                const output = make_deny_output(
-                    "TrustEngine: policies.json is protected. Use grant_permission(scope='permanent') to modify policies.",
-                );
-                process.stdout.write(JSON.stringify(output));
-                return;
+            for (const dir of protected_paths) {
+                if (cmd.includes(dir)) {
+                    const output = make_deny_output(
+                        `TrustEngine: "${dir}" is a protected path. Bash commands referencing it are denied.`,
+                    );
+                    process.stdout.write(JSON.stringify(output));
+                    return;
+                }
             }
         }
 
@@ -324,8 +357,6 @@ async function run(): Promise<void> {
             );
         }
 
-        // Load policies and session grants
-        const policies = await load_policies(POLICIES_PATH);
         const session_grants = session_id
             ? await load_session_grants(session_id)
             : [];
