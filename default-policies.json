@@ -266,16 +266,6 @@
             "description": "Allow cp/mv targeting safe directories"
         },
         {
-            "id": "allow-npm-install",
-            "tool": "Bash",
-            "match": {
-                "command": "^npm +(install|ci|i)\\b"
-            },
-            "action": "allow",
-            "priority": 55,
-            "description": "Allow npm install commands"
-        },
-        {
             "id": "allow-git-commit",
             "tool": "Bash",
             "match": {
@@ -349,6 +339,15 @@
             },
             "risk": "Output redirect may overwrite files — verify the target path",
             "severity": "acknowledge"
+        },
+        {
+            "id": "risk-post-install-scripts",
+            "tool": "Bash",
+            "match": {
+                "command": "(^|[;&|] *)(npm +(install|ci|i)\\b|make\\b|cmake\\b)"
+            },
+            "risk": "Build/install commands can execute arbitrary post-install scripts",
+            "severity": "escalate"
         },
         {
             "id": "risk-file-overwrite",
