@@ -66,6 +66,36 @@
             "description": "Block piping to shell interpreters or xargs"
         },
         {
+            "id": "deny-curl-mutating",
+            "tool": "Bash",
+            "match": {
+                "command": "^curl\\b.*\\s(-X|--request|-d|--data|-F|--form|-T|--upload-file)\\b"
+            },
+            "action": "deny",
+            "priority": 85,
+            "description": "Block curl mutating/upload flags (-X, -d, -F, -T)"
+        },
+        {
+            "id": "allow-curl-output-safe",
+            "tool": "Bash",
+            "match": {
+                "command": "^curl\\b.*\\s(-o|--output) +$SAFE/"
+            },
+            "action": "allow",
+            "priority": 82,
+            "description": "Allow curl -o targeting safe directories"
+        },
+        {
+            "id": "deny-curl-output-unsafe",
+            "tool": "Bash",
+            "match": {
+                "command": "^curl\\b.*\\s(-o|--output|-O|--remote-name)\\b"
+            },
+            "action": "deny",
+            "priority": 80,
+            "description": "Block curl output flags unless overridden by safe-directory grant"
+        },
+        {
             "id": "deny-pushd-popd",
             "tool": "Bash",
             "match": {
