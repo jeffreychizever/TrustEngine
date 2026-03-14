@@ -46,6 +46,36 @@
             "description": "Allow writes within safe directories"
         },
         {
+            "id": "deny-pipe-to-interpreter",
+            "tool": "Bash",
+            "match": {
+                "command": "\\| *(bash|sh|zsh|python3?|perl|ruby|node|xargs)\\b"
+            },
+            "action": "deny",
+            "priority": 100,
+            "description": "Block piping to shell interpreters or xargs"
+        },
+        {
+            "id": "deny-awk-dangerous-flags",
+            "tool": "Bash",
+            "match": {
+                "command": "^awk +.*-f\\b"
+            },
+            "action": "deny",
+            "priority": 75,
+            "description": "Block awk -f (loads script files that can call system())"
+        },
+        {
+            "id": "deny-sed-dangerous-flags",
+            "tool": "Bash",
+            "match": {
+                "command": "^sed +.*(-[efi]\\b|/e(\\b| ))"
+            },
+            "action": "deny",
+            "priority": 75,
+            "description": "Block sed -e/-f/-i and s///e (script execution and in-place modification)"
+        },
+        {
             "id": "deny-write-in-unsafe",
             "tool": "Write|Edit",
             "match": {
@@ -69,7 +99,7 @@
             "id": "allow-text-processing",
             "tool": "Bash",
             "match": {
-                "command": "^(sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|column|less|more|man|help|info|tree|jq|yq)\\b"
+                "command": "^(sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|column|less|more|man|help|info|tree|jq|yq|awk|sed)\\b"
             },
             "action": "allow",
             "priority": 60,
