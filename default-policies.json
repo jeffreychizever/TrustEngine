@@ -46,6 +46,16 @@
             "description": "Allow writes within safe directories"
         },
         {
+            "id": "deny-metachar-injection",
+            "tool": "Bash",
+            "match": {
+                "command": "\\$\\(|`[^`]*`|\\$\\{"
+            },
+            "action": "deny",
+            "priority": 95,
+            "description": "Block inline command substitution in arguments ($(), backticks, ${})"
+        },
+        {
             "id": "deny-pipe-to-interpreter",
             "tool": "Bash",
             "match": {
