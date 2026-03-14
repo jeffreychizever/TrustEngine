@@ -1,5 +1,5 @@
 {
-    "version": 1,
+    "version": 2,
     "rules": [
         {
             "id": "deny-dangerous-bash",
@@ -56,14 +56,104 @@
             "description": "Block writes within unsafe directories"
         },
         {
-            "id": "allow-safe-bash",
+            "id": "allow-system-info",
             "tool": "Bash",
             "match": {
-                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|env|printenv|set|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq|sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|grep|rg|ag|ack|jq|yq|column|less|more|man|help|info|tree|git +(status|log|diff|show|branch|tag|remote|fetch|stash|ls-files|rev-parse|describe|config +--get|config +--list|blame|shortlog|reflog|init)|npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|npx|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run)|cargo +(test|check|clippy|build|bench|doc|fmt)|rustc +--version|go +(test|vet|build|run|fmt|doc)|python3? +-m +(pytest|unittest|json\\.tool|py_compile|compileall)|pip +(list|show|freeze)|pip3 +(list|show|freeze)|ruby +-c|bundle +(exec|list|show|info)|rake +|rspec|java +--version|javac +--version|mvn +(test|verify|compile|package)|gradle +(test|check|build)|make |cmake |gcc +--version|g\\+\\+ +--version|clang +--version|docker +(ps|images|logs|inspect|version)|kubectl +(get|describe|logs|version)|terraform +(plan|validate|fmt)|tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|black|isort|gofmt|rustfmt|mkdir|touch|cp|mv|ln)\\b"
+                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|env|printenv|set|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq)\\b"
             },
             "action": "allow",
             "priority": 60,
-            "description": "Allow common safe bash commands"
+            "description": "Allow system info and basic read-only commands"
+        },
+        {
+            "id": "allow-text-processing",
+            "tool": "Bash",
+            "match": {
+                "command": "^(sort|uniq|tr|cut|paste|join|comm|diff|cmp|md5sum|sha256sum|sha1sum|column|less|more|man|help|info|tree|jq|yq)\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow text processing and viewing commands"
+        },
+        {
+            "id": "allow-search-tools",
+            "tool": "Bash",
+            "match": {
+                "command": "^(grep|rg|ag|ack)\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow search/grep tools"
+        },
+        {
+            "id": "allow-git-readonly",
+            "tool": "Bash",
+            "match": {
+                "command": "^git +(status|log|diff|show|branch|tag|remote|fetch|stash|ls-files|rev-parse|describe|config +--get|config +--list|blame|shortlog|reflog|init)\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow read-only git commands"
+        },
+        {
+            "id": "allow-node-ecosystem",
+            "tool": "Bash",
+            "match": {
+                "command": "^(npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|npx|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run))\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow Node.js ecosystem read-only and test commands"
+        },
+        {
+            "id": "allow-rust-go-python",
+            "tool": "Bash",
+            "match": {
+                "command": "^(cargo +(test|check|clippy|build|bench|doc|fmt)|rustc +--version|go +(test|vet|build|run|fmt|doc)|python3? +-m +(pytest|unittest|json\\.tool|py_compile|compileall)|pip3? +(list|show|freeze))\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow Rust, Go, and Python build/test commands"
+        },
+        {
+            "id": "allow-ruby-java",
+            "tool": "Bash",
+            "match": {
+                "command": "^(ruby +-c|bundle +(exec|list|show|info)|rake |rspec|java +--version|javac +--version|mvn +(test|verify|compile|package)|gradle +(test|check|build))\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow Ruby and Java build/test commands"
+        },
+        {
+            "id": "allow-build-tools",
+            "tool": "Bash",
+            "match": {
+                "command": "^(gcc +--version|g\\+\\+ +--version|clang +--version)\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow C/C++ compiler version checks"
+        },
+        {
+            "id": "allow-containers-infra",
+            "tool": "Bash",
+            "match": {
+                "command": "^(docker +(ps|images|logs|inspect|version)|kubectl +(get|describe|logs|version)|terraform +(plan|validate|fmt))\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow read-only container and infrastructure commands"
+        },
+        {
+            "id": "allow-linters",
+            "tool": "Bash",
+            "match": {
+                "command": "^(tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|black|isort|gofmt|rustfmt)\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow linters and formatters"
         },
         {
             "id": "allow-npm-install",
