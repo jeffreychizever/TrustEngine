@@ -56,6 +56,16 @@
             "description": "Block piping to shell interpreters or xargs"
         },
         {
+            "id": "deny-pushd-popd",
+            "tool": "Bash",
+            "match": {
+                "command": "^(pushd|popd)\\b"
+            },
+            "action": "deny",
+            "priority": 75,
+            "description": "Block pushd/popd — use cd instead for simpler evaluation"
+        },
+        {
             "id": "deny-awk-dangerous-flags",
             "tool": "Bash",
             "match": {
@@ -84,6 +94,16 @@
             "action": "deny",
             "priority": 90,
             "description": "Block writes within unsafe directories"
+        },
+        {
+            "id": "allow-cd",
+            "tool": "Bash",
+            "match": {
+                "command": "^cd\\b"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow cd (directory changes are safe; subsequent command is evaluated separately)"
         },
         {
             "id": "allow-system-info",
