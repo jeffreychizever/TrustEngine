@@ -302,6 +302,15 @@
             "severity": "block"
         },
         {
+            "id": "risk-redirect",
+            "tool": "Bash",
+            "match": {
+                "command": "[^2]>(?!/dev/null)"
+            },
+            "risk": "Output redirect may overwrite files — verify the target path",
+            "severity": "acknowledge"
+        },
+        {
             "id": "risk-file-overwrite",
             "tool": "Bash",
             "match": {
