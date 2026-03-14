@@ -4,7 +4,7 @@ import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFile, writeFile, mkdir, rename, chmod, readdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, chmod } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -172,24 +172,8 @@ async function save_user_grants(overlay: OverlayFile): Promise<void> {
 
 async function load_merged_policies(): Promise<PoliciesFile> {
     const base = await load_or_create_policies();
-    let overlays: OverlayFile[];
-    try {
-        const entries = (await readdir(OVERLAYS_DIR))
-            .filter((f) => f.endsWith(".json"))
-            .sort();
-        overlays = [];
-        for (const file of entries) {
-            try {
-                const raw = await readFile(join(OVERLAYS_DIR, file), "utf-8");
-                const data = JSON.parse(raw) as OverlayFile;
-                if (data.version != null) overlays.push(data);
-            } catch { continue; }
-        }
-    } catch {
-        overlays = [];
-    }
-
-    const { merge_policies_with_overlays } = await import("./engine.js");
+    const { load_overlays, merge_policies_with_overlays } = await import("./engine.js");
+    const overlays = await load_overlays(OVERLAYS_DIR);
     return merge_policies_with_overlays(base, overlays);
 }
 

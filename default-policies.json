@@ -46,16 +46,6 @@
             "description": "Allow writes within safe directories"
         },
         {
-            "id": "deny-metachar-injection",
-            "tool": "Bash",
-            "match": {
-                "command": "\\$\\(|`[^`]*`|\\$\\{"
-            },
-            "action": "deny",
-            "priority": 95,
-            "description": "Block inline command substitution in arguments ($(), backticks, ${})"
-        },
-        {
             "id": "deny-pipe-to-interpreter",
             "tool": "Bash",
             "match": {
@@ -330,6 +320,15 @@
             },
             "risk": "npm publish pushes packages to public registry — this is irreversible",
             "severity": "block"
+        },
+        {
+            "id": "risk-metachar-injection",
+            "tool": "Bash",
+            "match": {
+                "command": "\\$\\(|`[^`]*`|\\$\\{"
+            },
+            "risk": "Command contains shell substitution ($(), backticks, ${}) — verify the expanded command is safe",
+            "severity": "escalate"
         },
         {
             "id": "risk-redirect",
