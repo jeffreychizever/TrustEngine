@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type {
     PoliciesFile,
+    OverlayFile,
     TrustRule,
     KnownRisk,
     EvaluationResult,
@@ -14,6 +16,92 @@ export async function load_policies(path: string): Promise<PoliciesFile> {
     }
     data.known_risks ??= [];
     return data;
+}
+
+export async function load_overlays(overlays_dir: string): Promise<OverlayFile[]> {
+    let entries: string[];
+    try {
+        entries = await readdir(overlays_dir);
+    } catch {
+        return [];
+    }
+
+    const json_files = entries
+        .filter((f) => f.endsWith(".json"))
+        .sort(); // alphabetical order for deterministic merge
+
+    const overlays: OverlayFile[] = [];
+    for (const file of json_files) {
+        try {
+            const raw = await readFile(join(overlays_dir, file), "utf-8");
+            const data = JSON.parse(raw) as OverlayFile;
+            if (data.version == null) continue; // skip invalid files
+            overlays.push(data);
+        } catch {
+            // Skip unparseable overlay files
+            continue;
+        }
+    }
+    return overlays;
+}
+
+export function merge_policies_with_overlays(
+    base: PoliciesFile,
+    overlays: OverlayFile[],
+): PoliciesFile {
+    const merged: PoliciesFile = {
+        version: base.version,
+        rules: [...base.rules],
+        known_risks: [...base.known_risks],
+        safe_directories: base.safe_directories ? [...base.safe_directories] : undefined,
+        unsafe_directories: base.unsafe_directories ? [...base.unsafe_directories] : undefined,
+    };
+
+    for (const overlay of overlays) {
+        // Remove rules by ID
+        if (overlay.remove_rules && overlay.remove_rules.length > 0) {
+            const remove_set = new Set(overlay.remove_rules);
+            merged.rules = merged.rules.filter((r) => !remove_set.has(r.id));
+        }
+
+        // Remove risks by ID
+        if (overlay.remove_risks && overlay.remove_risks.length > 0) {
+            const remove_set = new Set(overlay.remove_risks);
+            merged.known_risks = merged.known_risks.filter((r) => !remove_set.has(r.id));
+        }
+
+        // Add rules
+        if (overlay.rules && overlay.rules.length > 0) {
+            merged.rules.push(...overlay.rules);
+        }
+
+        // Add risks
+        if (overlay.known_risks && overlay.known_risks.length > 0) {
+            merged.known_risks.push(...overlay.known_risks);
+        }
+
+        // Union safe directories
+        if (overlay.safe_directories && overlay.safe_directories.length > 0) {
+            merged.safe_directories ??= [];
+            for (const dir of overlay.safe_directories) {
+                if (!merged.safe_directories.includes(dir)) {
+                    merged.safe_directories.push(dir);
+                }
+            }
+        }
+
+        // Union unsafe directories
+        if (overlay.unsafe_directories && overlay.unsafe_directories.length > 0) {
+            merged.unsafe_directories ??= [];
+            for (const dir of overlay.unsafe_directories) {
+                if (!merged.unsafe_directories.includes(dir)) {
+                    merged.unsafe_directories.push(dir);
+                }
+            }
+        }
+    }
+
+    return merged;
 }
 
 export function substitute_variables(

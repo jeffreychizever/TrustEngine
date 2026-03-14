@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$HOME/.config/trustengine"
 SESSIONS_DIR="$HOME/.config/trustengine/sessions"
+OVERLAYS_DIR="$HOME/.config/trustengine/overlays"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CLAUDE_GLOBAL="$HOME/.claude.json"
 HOOK_COMMAND="node $SCRIPT_DIR/dist/hook.js"
@@ -75,8 +76,10 @@ echo
 echo "[2/5] Creating directories..."
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$SESSIONS_DIR"
+mkdir -p "$OVERLAYS_DIR"
 echo "  Created: $CONFIG_DIR"
 echo "  Created: $SESSIONS_DIR"
+echo "  Created: $OVERLAYS_DIR"
 echo
 
 # 3. Copy default policies (skip if exists, unless --force)

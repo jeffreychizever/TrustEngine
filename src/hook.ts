@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, realpath, writeFile, mkdir } from "node:fs/promises";
 import type { HookInput, HookOutput } from "./types.js";
-import { load_policies, evaluate } from "./engine.js";
+import { load_policies, load_overlays, merge_policies_with_overlays, evaluate } from "./engine.js";
 import {
     load_session_grants,
     consume_once_grant,
@@ -15,6 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const INSTALL_DIR = join(__dirname, "..");
 const CONFIG_DIR = join(homedir(), ".config", "trustengine");
 const POLICIES_PATH = join(CONFIG_DIR, "policies.json");
+const OVERLAYS_DIR = join(CONFIG_DIR, "overlays");
 const DEBUG_LOG = "/tmp/trustengine-debug.log";
 
 async function resolve_file_path(file_path: string): Promise<string> {
@@ -283,8 +284,10 @@ async function run(): Promise<void> {
             return;
         }
 
-        // Load policies early so self-protection can reference unsafe_directories
-        const policies = await load_policies(POLICIES_PATH);
+        // Load policies + overlays early so self-protection can reference unsafe_directories
+        const base_policies = await load_policies(POLICIES_PATH);
+        const overlays = await load_overlays(OVERLAYS_DIR);
+        const policies = merge_policies_with_overlays(base_policies, overlays);
 
         // Build the list of protected paths for hardcoded self-protection.
         // This covers both Write/Edit and Bash commands referencing these paths.
@@ -312,6 +315,13 @@ async function run(): Promise<void> {
             if (target === POLICIES_PATH || target.endsWith("/trustengine/policies.json")) {
                 const output = make_deny_output(
                     "TrustEngine: policies.json is protected. Use grant_permission(scope='permanent') to modify policies.",
+                );
+                process.stdout.write(JSON.stringify(output));
+                return;
+            }
+            if (target.includes("/trustengine/overlays/")) {
+                const output = make_deny_output(
+                    "TrustEngine: the overlays directory is protected. Use grant_permission(scope='permanent') to modify policies.",
                 );
                 process.stdout.write(JSON.stringify(output));
                 return;

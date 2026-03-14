@@ -43,6 +43,18 @@ export interface PoliciesFile {
     unsafe_directories?: string[];
 }
 
+export interface OverlayFile {
+    version: number;
+    name: string;
+    description?: string;
+    rules?: TrustRule[];
+    known_risks?: KnownRisk[];
+    remove_rules?: string[];
+    remove_risks?: string[];
+    safe_directories?: string[];
+    unsafe_directories?: string[];
+}
+
 export interface SessionFile {
     session_id: string;
     grants: TrustRule[];

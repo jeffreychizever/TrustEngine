@@ -4,21 +4,24 @@ import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFile, writeFile, mkdir, rename, chmod } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, chmod, readdir } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { PoliciesFile, TrustRule, KnownRisk } from "./types.js";
+import type { PoliciesFile, OverlayFile, TrustRule, KnownRisk } from "./types.js";
 import {
     add_session_grant,
     read_session_breadcrumb,
 } from "./session_store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const POLICIES_PATH = join(homedir(), ".config", "trustengine", "policies.json");
-const SCRIPTS_DIR = join(homedir(), ".config", "trustengine", "scripts");
+const CONFIG_DIR = join(homedir(), ".config", "trustengine");
+const POLICIES_PATH = join(CONFIG_DIR, "policies.json");
+const OVERLAYS_DIR = join(CONFIG_DIR, "overlays");
+const USER_GRANTS_PATH = join(OVERLAYS_DIR, "user-grants.json");
+const SCRIPTS_DIR = join(CONFIG_DIR, "scripts");
 
 // User override: ~/.config/trustengine/help.ejs
 // Fallback: bundled template in src/templates/
@@ -143,6 +146,51 @@ async function save_policies(policies: PoliciesFile): Promise<void> {
     const tmp_path = `${POLICIES_PATH}.${randomUUID()}.tmp`;
     await writeFile(tmp_path, JSON.stringify(policies, null, 4), "utf-8");
     await rename(tmp_path, POLICIES_PATH);
+}
+
+async function load_user_grants(): Promise<OverlayFile> {
+    try {
+        const raw = await readFile(USER_GRANTS_PATH, "utf-8");
+        return JSON.parse(raw) as OverlayFile;
+    } catch {
+        return {
+            version: 1,
+            name: "user-grants",
+            description: "User-specific permission grants created via grant_permission",
+            rules: [],
+            known_risks: [],
+        };
+    }
+}
+
+async function save_user_grants(overlay: OverlayFile): Promise<void> {
+    await mkdir(OVERLAYS_DIR, { recursive: true });
+    const tmp_path = `${USER_GRANTS_PATH}.${randomUUID()}.tmp`;
+    await writeFile(tmp_path, JSON.stringify(overlay, null, 4), "utf-8");
+    await rename(tmp_path, USER_GRANTS_PATH);
+}
+
+async function load_merged_policies(): Promise<PoliciesFile> {
+    const base = await load_or_create_policies();
+    let overlays: OverlayFile[];
+    try {
+        const entries = (await readdir(OVERLAYS_DIR))
+            .filter((f) => f.endsWith(".json"))
+            .sort();
+        overlays = [];
+        for (const file of entries) {
+            try {
+                const raw = await readFile(join(OVERLAYS_DIR, file), "utf-8");
+                const data = JSON.parse(raw) as OverlayFile;
+                if (data.version != null) overlays.push(data);
+            } catch { continue; }
+        }
+    } catch {
+        overlays = [];
+    }
+
+    const { merge_policies_with_overlays } = await import("./engine.js");
+    return merge_policies_with_overlays(base, overlays);
 }
 
 const server = new Server(
@@ -386,7 +434,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const cwd = (args.cwd as string) ?? process.cwd();
         const session_id = args.session_id as string | undefined;
 
-        const policies = await load_or_create_policies();
+        const policies = await load_merged_policies();
         const session_grants = session_id
             ? await (await import("./session_store.js")).load_session_grants(session_id)
             : [];
@@ -436,7 +484,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Validate that all risk IDs are "acknowledge" tier
-        const policies = await load_or_create_policies();
+        const policies = await load_merged_policies();
         const risk_map = new Map(policies.known_risks.map((r) => [r.id, r]));
         const errors: string[] = [];
 
@@ -695,9 +743,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (scope === "once" || scope === "session") {
             await add_session_grant(session_id!, rule);
         } else {
-            const policies = await load_or_create_policies();
-            policies.rules.push({ ...rule, scope: undefined });
-            await save_policies(policies);
+            const overlay = await load_user_grants();
+            overlay.rules ??= [];
+            overlay.rules.push({ ...rule, scope: undefined });
+            await save_user_grants(overlay);
         }
 
         return {
@@ -914,14 +963,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
 
-    // Permanent scope — write to policies.json
-    const policies = await load_or_create_policies();
-    policies.rules.push({ ...rule, scope: undefined });
+    // Permanent scope — write to user-grants overlay
+    const overlay = await load_user_grants();
+    overlay.rules ??= [];
+    overlay.rules.push({ ...rule, scope: undefined });
 
     // Write associated known_risks
     if (known_risks && known_risks.length > 0) {
+        overlay.known_risks ??= [];
         for (const kr of known_risks) {
-            policies.known_risks.push({
+            overlay.known_risks.push({
                 id: kr.id,
                 tool,
                 match,
@@ -931,14 +982,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
     }
 
-    await save_policies(policies);
+    await save_user_grants(overlay);
 
     return {
         content: [
             {
                 type: "text" as const,
                 text:
-                    `Permanent rule added to policies.json:\n` +
+                    `Permanent rule added to user-grants overlay:\n` +
                     `  Rule ID: ${rule.id}\n` +
                     `  Tool: ${tool}\n` +
                     `  Match: ${match ? JSON.stringify(match) : "(any)"}\n` +

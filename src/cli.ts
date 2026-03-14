@@ -3,13 +3,17 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
-import { load_policies, evaluate } from "./engine.js";
+import { load_policies, load_overlays, merge_policies_with_overlays, evaluate } from "./engine.js";
 import type { HookInput } from "./types.js";
 
-const POLICIES_PATH = join(homedir(), ".config", "trustengine", "policies.json");
+const CONFIG_DIR = join(homedir(), ".config", "trustengine");
+const POLICIES_PATH = join(CONFIG_DIR, "policies.json");
+const OVERLAYS_DIR = join(CONFIG_DIR, "overlays");
 
 async function cmd_list(): Promise<void> {
-    const policies = await load_policies(POLICIES_PATH);
+    const base = await load_policies(POLICIES_PATH);
+    const overlays = await load_overlays(OVERLAYS_DIR);
+    const policies = merge_policies_with_overlays(base, overlays);
 
     console.log("=== Permanent Rules ===\n");
     if (policies.rules.length === 0) {
@@ -39,11 +43,26 @@ async function cmd_list(): Promise<void> {
             console.log();
         }
     }
+
+    if (overlays.length > 0) {
+        console.log("=== Loaded Overlays ===\n");
+        for (const overlay of overlays) {
+            const rule_count = overlay.rules?.length ?? 0;
+            const risk_count = overlay.known_risks?.length ?? 0;
+            console.log(`  ${overlay.name}: ${rule_count} rules, ${risk_count} risks`);
+            if (overlay.description) {
+                console.log(`    ${overlay.description}`);
+            }
+            console.log();
+        }
+    }
 }
 
 async function cmd_evaluate(json_str: string): Promise<void> {
     const input = JSON.parse(json_str) as HookInput;
-    const policies = await load_policies(POLICIES_PATH);
+    const base = await load_policies(POLICIES_PATH);
+    const overlays = await load_overlays(OVERLAYS_DIR);
+    const policies = merge_policies_with_overlays(base, overlays);
 
     const result = evaluate(
         policies,
