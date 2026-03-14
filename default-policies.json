@@ -156,6 +156,26 @@
             "description": "Allow linters and formatters"
         },
         {
+            "id": "allow-mkdir-touch-safe",
+            "tool": "Bash",
+            "match": {
+                "command": "^(mkdir|touch)\\b.* $SAFE/"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow mkdir/touch in safe directories"
+        },
+        {
+            "id": "allow-cp-mv-safe",
+            "tool": "Bash",
+            "match": {
+                "command": "^(cp|mv)\\b.* $SAFE/"
+            },
+            "action": "allow",
+            "priority": 60,
+            "description": "Allow cp/mv targeting safe directories"
+        },
+        {
             "id": "allow-npm-install",
             "tool": "Bash",
             "match": {
