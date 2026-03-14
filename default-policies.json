@@ -169,7 +169,7 @@
             "id": "allow-git-commit",
             "tool": "Bash",
             "match": {
-                "command": "^git +(add|commit|checkout|switch|merge|rebase|cherry-pick|reset +--soft|stash +(pop|apply|drop))\\b"
+                "command": "^git +(add|commit|checkout|switch|merge|cherry-pick|stash +(pop|apply|drop))\\b"
             },
             "action": "allow",
             "priority": 55,
