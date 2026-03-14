@@ -241,6 +241,29 @@ async function run(): Promise<void> {
             }
             if (!desc) errors.push("'description' is required");
 
+            // Validate tool pattern looks like it will actually match something.
+            // Standard Claude tools use PascalCase. MCP tools use mcp__server__tool.
+            // If the pattern is a simple name that doesn't match either convention,
+            // it's likely an unqualified MCP tool name that won't match anything.
+            if (tool_pattern && !/[|.*+?^${}()[\]\\]/.test(tool_pattern)) {
+                const known_tools = new Set([
+                    "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+                    "WebFetch", "WebSearch", "Agent", "NotebookEdit",
+                    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+                    "TaskOutput", "TaskStop", "AskUserQuestion",
+                    "EnterPlanMode", "ExitPlanMode", "EnterWorktree",
+                    "ExitWorktree", "Skill", "ToolSearch",
+                    "CronCreate", "CronDelete", "CronList",
+                ]);
+                if (!known_tools.has(tool_pattern) && !tool_pattern.startsWith("mcp__")) {
+                    errors.push(
+                        `Tool pattern "${tool_pattern}" doesn't match any known Claude tool ` +
+                        `and doesn't use MCP qualified syntax (mcp__<server>__<tool>). ` +
+                        `If this is an MCP tool, use the full qualified name.`,
+                    );
+                }
+            }
+
             if (match_raw && command_names && command_names.length > 0) {
                 errors.push("Cannot use both 'match' and structured fields (command_names/path_prefix/allowed_flags). Use one or the other.");
             }
