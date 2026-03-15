@@ -280,17 +280,24 @@ async function run(): Promise<void> {
                 }
             }
 
-            // Warn about .* in raw match patterns — it can break backslash-escape
-            // handling in $SAFE/$UNSAFE and may be overly broad. The structured
-            // fields (command_names/path_prefix) compile to safer, scoped patterns.
+            // Warn about patterns that may cause subtle issues
             const warnings: string[] = [];
             if (match_raw) {
                 for (const [param, pattern] of Object.entries(match_raw)) {
+                    // .* can break backslash-escape handling and may be overly broad
                     if (/\.\*/.test(pattern)) {
                         warnings.push(
                             `Pattern for '${param}' contains '.*' which may be overly broad ` +
                             `and can interfere with backslash-escaped paths. ` +
                             `Consider using structured fields (command_names, path_prefix) instead.`,
+                        );
+                    }
+                    // $SAFE_CMD in deny rules has inverted semantics that are rarely intended
+                    if (/\$SAFE_CMD/.test(pattern) && tool_input.action === "deny") {
+                        warnings.push(
+                            `$SAFE_CMD in a deny rule means "deny if the inner command is safe" ` +
+                            `which is rarely the intended semantics. $SAFE_CMD is designed for ` +
+                            `allow rules.`,
                         );
                     }
                 }

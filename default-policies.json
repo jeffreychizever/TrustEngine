@@ -256,6 +256,28 @@
             "description": "Allow cp/mv targeting safe directories"
         },
         {
+            "id": "allow-safe-redirect",
+            "tool": "Bash",
+            "match": {
+                "command": "^$SAFE_CMD >+ *$SAFE"
+            },
+            "action": "allow",
+            "priority": 62,
+            "description": "Allow safe commands with output redirect to safe directory",
+            "acknowledged_risks": ["risk-redirect"]
+        },
+        {
+            "id": "allow-safe-subshell",
+            "tool": "Bash",
+            "match": {
+                "command": "^$SAFE_CMD \\$\\($SAFE_CMD\\)$"
+            },
+            "action": "allow",
+            "priority": 62,
+            "description": "Allow commands with $() subshells where both pass evaluation",
+            "acknowledged_risks": ["risk-metachar-injection"]
+        },
+        {
             "id": "allow-git-commit",
             "tool": "Bash",
             "match": {

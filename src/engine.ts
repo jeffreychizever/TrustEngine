@@ -27,6 +27,24 @@ export interface EvalContext {
     unsafe: ResolvedDirs;
 }
 
+/**
+ * Context for $SAFE_CMD recursive evaluation. Carries the rules and risks
+ * needed to evaluate captured command fragments, plus a depth counter to
+ * prevent infinite recursion.
+ *
+ * Only passed to matches_rule (not find_matching_risks) — risks should
+ * never contain $SAFE_CMD, and any __safe_cmd__ captures fail-closed
+ * when this context is absent.
+ */
+interface RecursiveEvalContext {
+    all_rules: TrustRule[];
+    known_risks: KnownRisk[];
+    depth: number;
+    max_depth: number;
+}
+
+const MAX_SAFE_CMD_DEPTH = 3;
+
 // ---------------------------------------------------------------------------
 // Policy / overlay loading (unchanged)
 // ---------------------------------------------------------------------------
@@ -198,18 +216,51 @@ function resolve_match_path(captured: string, effective_cwd: string): string {
 }
 
 /**
- * After a regex match, validate any $SAFE/$UNSAFE capture groups.
- * Returns true if all captured paths pass their respective directory checks.
+ * After a regex match, validate any $SAFE/$UNSAFE/$SAFE_CMD capture groups.
+ * Returns true if all captured values pass their respective checks.
  * Returns true trivially when no capture groups are present.
+ *
+ * For $SAFE_CMD captures (__safe_cmd_N__), the captured command string is
+ * recursively evaluated through evaluate_bash(). This requires the optional
+ * recursive_ctx parameter — when absent, any __safe_cmd__ group causes a
+ * fail-closed rejection (this is intentional for find_matching_risks, which
+ * should never trigger recursive evaluation).
  */
 function validate_path_captures(
     match: RegExpExecArray,
     ctx: EvalContext,
+    recursive_ctx?: RecursiveEvalContext,
 ): boolean {
     if (!match.groups) return true;
 
     for (const [name, value] of Object.entries(match.groups)) {
         if (value === undefined) continue;
+
+        if (name.startsWith("__safe_cmd_")) {
+            // $SAFE_CMD: recursively evaluate the captured command fragment
+            // through the full engine (splitting, deny checks, cd tracking).
+
+            // Fail-closed when recursive context is unavailable (e.g. risk matching)
+            if (!recursive_ctx) return false;
+
+            // Depth limit prevents infinite recursion when SAFE_CMD rules
+            // match commands that themselves contain SAFE_CMD-eligible patterns
+            if (recursive_ctx.depth >= recursive_ctx.max_depth) return false;
+
+            const inner_result = evaluate_bash(
+                recursive_ctx.all_rules,
+                recursive_ctx.known_risks,
+                "Bash",
+                { command: value },
+                ctx,
+                {
+                    ...recursive_ctx,
+                    depth: recursive_ctx.depth + 1,
+                },
+            );
+            if (inner_result.decision === "deny") return false;
+            continue;
+        }
 
         const resolved = resolve_match_path(value, ctx.effective_cwd);
 
@@ -266,14 +317,35 @@ function validate_path_captures(
  *
  * $SAFE and $UNSAFE captures are validated post-match via validate_path_captures.
  */
+/**
+ * @param skip_safe_cmd - When true, $SAFE_CMD is not replaced. Used when
+ *   substituting tool name patterns (where SAFE_CMD makes no sense).
+ */
 export function substitute_variables(
     pattern: string,
     cwd: string,
+    skip_safe_cmd?: boolean,
 ): string {
     const escaped_cwd = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
     let result = pattern.replace(/\$NOTCWD/g, `(?!${escaped_cwd}/)`);
     result = result.replace(/\$CWD/g, escaped_cwd);
+
+    // $SAFE_CMD: captures a command fragment for recursive evaluation.
+    // Uses lazy .+? so that when multiple $SAFE_CMD appear in one pattern
+    // (e.g. "^$SAFE_CMD \$\($SAFE_CMD\)"), the first capture takes as
+    // little as possible, letting literal anchors like "$(" match.
+    //
+    // Processed BEFORE $SAFE/$UNSAFE to avoid partial matching — though
+    // $SAFE\b already won't match $SAFE_CMD (since _ is a word character),
+    // explicit ordering makes the intent clear.
+    if (!skip_safe_cmd) {
+        let safe_cmd_idx = 0;
+        result = result.replace(
+            /\$SAFE_CMD\b/g,
+            () => `(?<__safe_cmd_${safe_cmd_idx++}__>.+?)`,
+        );
+    }
 
     // The capture group for $SAFE/$UNSAFE: matches non-whitespace characters
     // OR a backslash followed by any character (handling escaped spaces, etc).
@@ -321,6 +393,9 @@ export function substitute_variables(
 /**
  * Test whether a tool name + input matches a tool pattern + match conditions.
  * Used by both matches_rule and find_matching_risks.
+ *
+ * @param recursive_ctx - When present, enables $SAFE_CMD recursive evaluation.
+ *   Omitted by find_matching_risks so that risks never trigger recursion.
  */
 function matches_tool_and_input(
     tool_pattern: string,
@@ -328,10 +403,10 @@ function matches_tool_and_input(
     tool_name: string,
     tool_input: Record<string, unknown>,
     ctx: EvalContext,
+    recursive_ctx?: RecursiveEvalContext,
 ): boolean {
-    // Tool name matching — $CWD/$NOTCWD are substituted but no path validation
-    // (tool names don't contain filesystem paths)
-    const tool_substituted = substitute_variables(tool_pattern, ctx.cwd);
+    // Tool name matching — skip $SAFE_CMD replacement (tool names aren't commands)
+    const tool_substituted = substitute_variables(tool_pattern, ctx.cwd, /* skip_safe_cmd */ true);
     try {
         if (!new RegExp(`^(?:${tool_substituted})$`).test(tool_name)) {
             return false;
@@ -340,7 +415,8 @@ function matches_tool_and_input(
         return false;
     }
 
-    // Match pattern matching — uses exec() so we get capture groups for $SAFE/$UNSAFE
+    // Match pattern matching — uses exec() so we get capture groups for
+    // $SAFE/$UNSAFE path validation and $SAFE_CMD recursive evaluation
     if (match_patterns) {
         for (const [param, pattern] of Object.entries(match_patterns)) {
             const value = tool_input[param];
@@ -351,7 +427,7 @@ function matches_tool_and_input(
             try {
                 const match = new RegExp(substituted).exec(String(value));
                 if (!match) return false;
-                if (!validate_path_captures(match, ctx)) return false;
+                if (!validate_path_captures(match, ctx, recursive_ctx)) return false;
             } catch {
                 return false;
             }
@@ -366,6 +442,7 @@ export function matches_rule(
     tool_name: string,
     tool_input: Record<string, unknown>,
     ctx: EvalContext,
+    recursive_ctx?: RecursiveEvalContext,
 ): boolean {
     return matches_tool_and_input(
         rule.tool,
@@ -373,6 +450,7 @@ export function matches_rule(
         tool_name,
         tool_input,
         ctx,
+        recursive_ctx,
     );
 }
 
@@ -382,6 +460,7 @@ export function find_matching_risks(
     tool_input: Record<string, unknown>,
     ctx: EvalContext,
 ): KnownRisk[] {
+    // No recursive_ctx — risks with $SAFE_CMD captures will fail-closed
     const matched: KnownRisk[] = [];
     for (const risk of risks) {
         if (matches_tool_and_input(risk.tool, risk.match, tool_name, tool_input, ctx)) {
@@ -721,6 +800,7 @@ function evaluate_single(
     tool_name: string,
     tool_input: Record<string, unknown>,
     ctx: EvalContext,
+    recursive_ctx?: RecursiveEvalContext,
 ): EvaluationResult {
     // Sort: highest priority first, deny before allow at same priority
     const sorted = [...all_rules].sort((a, b) => {
@@ -730,9 +810,19 @@ function evaluate_single(
         return 0;
     });
 
+    // Build recursive context for $SAFE_CMD if not already provided.
+    // This is constructed at the evaluate_single level (not evaluate_bash)
+    // so that each rule match has access to the full rule set and risks.
+    const rec_ctx: RecursiveEvalContext = recursive_ctx ?? {
+        all_rules,
+        known_risks,
+        depth: 0,
+        max_depth: MAX_SAFE_CMD_DEPTH,
+    };
+
     // Find first matching rule
     for (const rule of sorted) {
-        if (matches_rule(rule, tool_name, tool_input, ctx)) {
+        if (matches_rule(rule, tool_name, tool_input, ctx, rec_ctx)) {
             const risk_warnings = find_matching_risks(
                 known_risks,
                 tool_name,
@@ -834,6 +924,128 @@ function extract_cd_target(sub_cmd: string): string | null {
     return target;
 }
 
+/**
+ * Internal bash evaluation with full splitting, deny-check, and cd tracking.
+ * Extracted from evaluate() so that $SAFE_CMD recursive evaluation can reuse
+ * the same logic with pre-merged rules and an incremented depth counter.
+ *
+ * For non-Bash tools, delegates directly to evaluate_single.
+ */
+function evaluate_bash(
+    all_rules: TrustRule[],
+    known_risks: KnownRisk[],
+    tool_name: string,
+    tool_input: Record<string, unknown>,
+    ctx: EvalContext,
+    recursive_ctx?: RecursiveEvalContext,
+): EvaluationResult {
+    // Non-Bash tools go straight to evaluate_single
+    if (tool_name !== "Bash" || typeof tool_input.command !== "string") {
+        return evaluate_single(all_rules, known_risks, tool_name, tool_input, ctx, recursive_ctx);
+    }
+
+    // First: check the FULL unsplit command against deny-only rules.
+    // This catches cross-pipe patterns like "curl ... | bash" that
+    // disappear after splitting on pipe.
+    const deny_rules = all_rules.filter((r) => r.action === "deny");
+    const full_deny = evaluate_single(
+        deny_rules,
+        known_risks,
+        tool_name,
+        tool_input,
+        ctx,
+        recursive_ctx,
+    );
+    if (full_deny.decision === "deny" && full_deny.matched_rule) {
+        return full_deny;
+    }
+
+    const sub_commands = split_bash_command(tool_input.command);
+
+    if (sub_commands.length === 0) {
+        return {
+            decision: "deny",
+            matched_rule: undefined,
+            risk_warnings: [],
+            reason: "Empty bash command — default deny",
+        };
+    }
+
+    const failures: { sub_cmd: string; result: EvaluationResult }[] = [];
+    const all_risks: KnownRisk[] = [];
+    const once_grants: string[] = [];
+
+    // Track effective CWD through cd commands within this bash invocation.
+    // $CWD/$NOTCWD stay bound to the original cwd — only $SAFE/$UNSAFE
+    // path resolution uses the effective_cwd.
+    let effective_cwd = ctx.effective_cwd;
+
+    for (const sub_cmd of sub_commands) {
+        // Check if this sub-command is a cd — update effective_cwd for
+        // subsequent sub-commands (but not $CWD/$NOTCWD)
+        const cd_target = extract_cd_target(sub_cmd);
+        if (cd_target !== null) {
+            effective_cwd = path_resolve(effective_cwd, cd_target);
+        }
+
+        const sub_ctx: EvalContext = {
+            ...ctx,
+            effective_cwd,
+        };
+        const sub_input = { ...tool_input, command: sub_cmd };
+        const result = evaluate_single(
+            all_rules,
+            known_risks,
+            tool_name,
+            sub_input,
+            sub_ctx,
+            recursive_ctx,
+        );
+
+        if (result.decision === "deny") {
+            failures.push({ sub_cmd, result });
+            all_risks.push(...result.risk_warnings);
+        } else if (
+            result.matched_rule?.scope === "once" &&
+            result.matched_rule.id
+        ) {
+            once_grants.push(result.matched_rule.id);
+        }
+    }
+
+    if (failures.length > 0) {
+        // Extract the base command name from each failed sub-command
+        const denied_cmds = failures.map((f) => {
+            const match = f.sub_cmd.match(/^\s*(\S+)/);
+            return match ? match[1] : f.sub_cmd;
+        });
+        const unique_cmds = [...new Set(denied_cmds)];
+
+        const details = failures
+            .map((f) => `\`${f.sub_cmd}\`: ${f.result.reason}`)
+            .join("\n");
+        return {
+            decision: "deny",
+            matched_rule: failures[0].result.matched_rule,
+            risk_warnings: all_risks,
+            reason: failures.length === 1
+                ? `Sub-command denied: ${details}`
+                : `${failures.length} sub-commands denied:\n${details}`,
+            denied_commands: unique_cmds,
+            denied_sub_commands: failures.map((f) => f.sub_cmd),
+        };
+    }
+
+    // All sub-commands allowed
+    return {
+        decision: "allow",
+        matched_rule: undefined,
+        risk_warnings: [],
+        reason: `All ${sub_commands.length} sub-command(s) allowed`,
+        once_grants_consumed: once_grants.length > 0 ? once_grants : undefined,
+    };
+}
+
 export function evaluate(
     policies: PoliciesFile,
     session_grants: TrustRule[],
@@ -862,113 +1074,5 @@ export function evaluate(
         unsafe,
     };
 
-    // Special handling for Bash tool: evaluate each sub-command independently
-    if (tool_name === "Bash" && typeof tool_input.command === "string") {
-        // First: check the FULL unsplit command against deny-only rules.
-        // This catches cross-pipe patterns like "curl ... | bash" that
-        // disappear after splitting on pipe.
-        const deny_rules = all_rules.filter((r) => r.action === "deny");
-        const full_deny = evaluate_single(
-            deny_rules,
-            policies.known_risks,
-            tool_name,
-            tool_input,
-            base_ctx,
-        );
-        if (full_deny.decision === "deny" && full_deny.matched_rule) {
-            return full_deny;
-        }
-
-        const sub_commands = split_bash_command(tool_input.command);
-
-        if (sub_commands.length === 0) {
-            return {
-                decision: "deny",
-                matched_rule: undefined,
-                risk_warnings: [],
-                reason: "Empty bash command — default deny",
-            };
-        }
-
-        const failures: { sub_cmd: string; result: EvaluationResult }[] = [];
-        const all_risks: KnownRisk[] = [];
-        const once_grants: string[] = [];
-
-        // Track effective CWD through cd commands within this bash invocation.
-        // $CWD/$NOTCWD stay bound to the original cwd — only $SAFE/$UNSAFE
-        // path resolution uses the effective_cwd.
-        let effective_cwd = resolved_cwd;
-
-        for (const sub_cmd of sub_commands) {
-            // Check if this sub-command is a cd — update effective_cwd for
-            // subsequent sub-commands (but not $CWD/$NOTCWD)
-            const cd_target = extract_cd_target(sub_cmd);
-            if (cd_target !== null) {
-                effective_cwd = path_resolve(effective_cwd, cd_target);
-            }
-
-            const sub_ctx: EvalContext = {
-                ...base_ctx,
-                effective_cwd,
-            };
-            const sub_input = { ...tool_input, command: sub_cmd };
-            const result = evaluate_single(
-                all_rules,
-                policies.known_risks,
-                tool_name,
-                sub_input,
-                sub_ctx,
-            );
-
-            if (result.decision === "deny") {
-                failures.push({ sub_cmd, result });
-                all_risks.push(...result.risk_warnings);
-            } else if (
-                result.matched_rule?.scope === "once" &&
-                result.matched_rule.id
-            ) {
-                once_grants.push(result.matched_rule.id);
-            }
-        }
-
-        if (failures.length > 0) {
-            // Extract the base command name from each failed sub-command
-            const denied_cmds = failures.map((f) => {
-                const match = f.sub_cmd.match(/^\s*(\S+)/);
-                return match ? match[1] : f.sub_cmd;
-            });
-            const unique_cmds = [...new Set(denied_cmds)];
-
-            const details = failures
-                .map((f) => `\`${f.sub_cmd}\`: ${f.result.reason}`)
-                .join("\n");
-            return {
-                decision: "deny",
-                matched_rule: failures[0].result.matched_rule,
-                risk_warnings: all_risks,
-                reason: failures.length === 1
-                    ? `Sub-command denied: ${details}`
-                    : `${failures.length} sub-commands denied:\n${details}`,
-                denied_commands: unique_cmds,
-                denied_sub_commands: failures.map((f) => f.sub_cmd),
-            };
-        }
-
-        // All sub-commands allowed
-        return {
-            decision: "allow",
-            matched_rule: undefined,
-            risk_warnings: [],
-            reason: `All ${sub_commands.length} sub-command(s) allowed`,
-            once_grants_consumed: once_grants.length > 0 ? once_grants : undefined,
-        };
-    }
-
-    return evaluate_single(
-        all_rules,
-        policies.known_risks,
-        tool_name,
-        tool_input,
-        base_ctx,
-    );
+    return evaluate_bash(all_rules, policies.known_risks, tool_name, tool_input, base_ctx);
 }

