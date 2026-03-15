@@ -1053,6 +1053,7 @@ function evaluate_single(
  * the target cannot be determined (e.g. `cd -`).
  */
 const CD_FLAG_RE = /^-[PLe@]+$/;
+const WHITESPACE_RE = /\s/;
 function extract_cd_target(sub_cmd: string): string | null {
     if (sub_cmd === "cd") return homedir();
 
@@ -1071,7 +1072,7 @@ function extract_cd_target(sub_cmd: string): string | null {
         if (c === "\\" && !in_sq) { esc = true; tok += c; continue; }
         if (c === "'" && !in_dq) { in_sq = !in_sq; tok += c; continue; }
         if (c === '"' && !in_sq) { in_dq = !in_dq; tok += c; continue; }
-        if (!in_sq && !in_dq && /\s/.test(c)) {
+        if (!in_sq && !in_dq && WHITESPACE_RE.test(c)) {
             if (tok) { tokens.push(tok); tok = ""; }
             continue;
         }
@@ -1289,35 +1290,35 @@ export function evaluate(
  * Call after loading/merging policies to catch malformed patterns at startup
  * rather than silently failing open at evaluation time.
  */
+function validate_match_entries(
+    items: Array<{ id: string; match?: Record<string, string> }>,
+    label: string,
+    cwd: string,
+): string[] {
+    const errors: string[] = [];
+    for (const item of items) {
+        if (item.match) {
+            for (const [key, pattern] of Object.entries(item.match)) {
+                try {
+                    const substituted = substitute_variables(pattern, cwd, true);
+                    new RegExp(substituted);
+                } catch (e) {
+                    errors.push(`${label} "${item.id}" match.${key}: ${e instanceof Error ? e.message : String(e)}`);
+                }
+            }
+        }
+    }
+    return errors;
+}
+
 export function validate_policy_regexes(
     policies: PoliciesFile,
     cwd: string,
 ): void {
-    const errors: string[] = [];
-    for (const rule of policies.rules) {
-        if (rule.match) {
-            for (const [key, pattern] of Object.entries(rule.match)) {
-                try {
-                    const substituted = substitute_variables(pattern, cwd, true);
-                    new RegExp(substituted);
-                } catch (e) {
-                    errors.push(`Rule "${rule.id}" match.${key}: ${e instanceof Error ? e.message : String(e)}`);
-                }
-            }
-        }
-    }
-    for (const risk of policies.known_risks) {
-        if (risk.match) {
-            for (const [key, pattern] of Object.entries(risk.match)) {
-                try {
-                    const substituted = substitute_variables(pattern, cwd, true);
-                    new RegExp(substituted);
-                } catch (e) {
-                    errors.push(`Risk "${risk.id}" match.${key}: ${e instanceof Error ? e.message : String(e)}`);
-                }
-            }
-        }
-    }
+    const errors = [
+        ...validate_match_entries(policies.rules, "Rule", cwd),
+        ...validate_match_entries(policies.known_risks, "Risk", cwd),
+    ];
     if (errors.length > 0) {
         throw new Error(`Invalid regex patterns in policies:\n${errors.join("\n")}`);
     }

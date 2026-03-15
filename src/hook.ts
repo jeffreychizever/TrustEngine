@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFile, realpath, writeFile, mkdir } from "node:fs/promises";
 import type { HookInput, HookOutput } from "./types.js";
-import { load_policies, load_overlays, merge_policies_with_overlays, evaluate } from "./engine.js";
+import { load_policies, load_overlays, merge_policies_with_overlays, evaluate, validate_policy_regexes } from "./engine.js";
 import {
     load_session_grants,
     consume_once_grant,
@@ -341,6 +341,12 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
     const overlays = await load_overlays(OVERLAYS_DIR);
     const policies = merge_policies_with_overlays(base_policies, overlays);
 
+    // Validate all regex patterns at load time — a malformed deny-rule regex
+    // would silently fail to match (the catch block in matches_tool_and_input
+    // returns false), effectively failing open. This check surfaces errors
+    // early so broken policies don't silently allow dangerous commands.
+    validate_policy_regexes(policies, cwd);
+
     // Build the list of protected paths for hardcoded self-protection.
     // This covers both Write/Edit and Bash commands referencing these paths.
     const protected_paths = [CONFIG_DIR, INSTALL_DIR];
@@ -377,26 +383,17 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
                 "TrustEngine: policies.json is protected. Use grant_permission(scope='permanent') to modify policies.",
             );
         }
-        // Check overlays — precise prefix + generic substring fallback
-        const overlays_prefix = join(CONFIG_DIR, "overlays");
-        if (target === overlays_prefix || target.startsWith(overlays_prefix + "/") || target.includes("/trustengine/overlays/")) {
-            return make_deny_output(
-                "TrustEngine: the overlays directory is protected. Use grant_permission(scope='permanent') to modify policies.",
-            );
-        }
-        // Check sessions — precise prefix + generic substring fallback
-        const sessions_prefix = join(CONFIG_DIR, "sessions");
-        if (target === sessions_prefix || target.startsWith(sessions_prefix + "/") || target.includes("/trustengine/sessions/")) {
-            return make_deny_output(
-                "TrustEngine: the sessions directory is protected. Session files cannot be modified directly.",
-            );
-        }
-        // Check scripts — precise prefix + generic substring fallback
-        const scripts_prefix = join(CONFIG_DIR, "scripts");
-        if (target === scripts_prefix || target.startsWith(scripts_prefix + "/") || target.includes("/trustengine/scripts/")) {
-            return make_deny_output(
-                "TrustEngine: the scripts directory is protected. Use grant_permission(script=...) to create approved scripts.",
-            );
+        // Check protected subdirectories — precise prefix + generic substring fallback
+        const protected_dirs: Array<[string, string]> = [
+            ["overlays", "TrustEngine: the overlays directory is protected. Use grant_permission(scope='permanent') to modify policies."],
+            ["sessions", "TrustEngine: the sessions directory is protected. Session files cannot be modified directly."],
+            ["scripts", "TrustEngine: the scripts directory is protected. Use grant_permission(script=...) to create approved scripts."],
+        ];
+        for (const [dir_name, message] of protected_dirs) {
+            const prefix = join(CONFIG_DIR, dir_name);
+            if (target === prefix || target.startsWith(prefix + "/") || target.includes(`/trustengine/${dir_name}/`)) {
+                return make_deny_output(message);
+            }
         }
         // Protect CONFIG_DIR itself
         if (target === CONFIG_DIR || target.endsWith("/trustengine")) {
@@ -423,6 +420,18 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
                     `TrustEngine: "${dir}" is a protected path. Bash commands referencing it are denied.`,
                 );
             }
+        }
+    }
+
+    // Strip null bytes and non-printable control characters from string
+    // values in tool_input before regex evaluation. Null bytes can cause
+    // regex patterns to silently fail to match (e.g. "su\x00do" won't
+    // match /sudo/), which could bypass deny rules. We preserve standard
+    // whitespace (\t, \n, \r) since they have legitimate uses in commands.
+    for (const [key, val] of Object.entries(resolved_input)) {
+        if (typeof val === "string") {
+            // eslint-disable-next-line no-control-regex
+            resolved_input[key] = val.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
         }
     }
 
