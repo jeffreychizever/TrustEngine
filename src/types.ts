@@ -34,6 +34,7 @@ export interface KnownRisk {
     match?: Record<string, string>;
     risk: string;
     severity: "block" | "escalate" | "acknowledge";
+    protected?: boolean;
 }
 
 export interface PoliciesFile {

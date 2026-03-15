@@ -377,17 +377,34 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
                 "TrustEngine: policies.json is protected. Use grant_permission(scope='permanent') to modify policies.",
             );
         }
-        if (target.includes("/trustengine/overlays/")) {
+        // Check overlays — precise prefix + generic substring fallback
+        const overlays_prefix = join(CONFIG_DIR, "overlays");
+        if (target === overlays_prefix || target.startsWith(overlays_prefix + "/") || target.includes("/trustengine/overlays/")) {
             return make_deny_output(
                 "TrustEngine: the overlays directory is protected. Use grant_permission(scope='permanent') to modify policies.",
             );
         }
-        if (target.includes("/trustengine/scripts/")) {
+        // Check sessions — precise prefix + generic substring fallback
+        const sessions_prefix = join(CONFIG_DIR, "sessions");
+        if (target === sessions_prefix || target.startsWith(sessions_prefix + "/") || target.includes("/trustengine/sessions/")) {
+            return make_deny_output(
+                "TrustEngine: the sessions directory is protected. Session files cannot be modified directly.",
+            );
+        }
+        // Check scripts — precise prefix + generic substring fallback
+        const scripts_prefix = join(CONFIG_DIR, "scripts");
+        if (target === scripts_prefix || target.startsWith(scripts_prefix + "/") || target.includes("/trustengine/scripts/")) {
             return make_deny_output(
                 "TrustEngine: the scripts directory is protected. Use grant_permission(script=...) to create approved scripts.",
             );
         }
-        if (target.startsWith(INSTALL_DIR + "/")) {
+        // Protect CONFIG_DIR itself
+        if (target === CONFIG_DIR || target.endsWith("/trustengine")) {
+            return make_deny_output(
+                "TrustEngine: the config directory is protected.",
+            );
+        }
+        if (target === INSTALL_DIR || target.startsWith(INSTALL_DIR + "/")) {
             return make_deny_output(
                 "TrustEngine: the installation directory is protected. Do not modify TrustEngine's source or built files.",
             );

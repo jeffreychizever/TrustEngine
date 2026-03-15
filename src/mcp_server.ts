@@ -541,14 +541,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
 
-        // Create a session-scoped grant acknowledging these risks
+        // Create a session-scoped grant acknowledging these risks.
+        // When match is provided, use standard grant priority.
+        // When match is omitted, use lower priority so the acknowledgement
+        // only supplements existing allow rules rather than creating new
+        // broad permissions.
+        const match_obj = match && Object.keys(match).length > 0 ? match : undefined;
+        const ack_priority = match_obj ? 85 : 50;
+        const desc_suffix = match_obj
+            ? `risks: ${risk_ids.join(", ")}`
+            : `broad acknowledgement (no match constraint) — risks: ${risk_ids.join(", ")}`;
+
         const rule: TrustRule = {
             id: `ack-${randomUUID().slice(0, 8)}`,
             tool,
-            match,
+            match: match_obj,
             action: "allow",
-            priority: 85,
-            description: `[acknowledged] risks: ${risk_ids.join(", ")}`,
+            priority: ack_priority,
+            description: `[acknowledged] ${desc_suffix}`,
             scope: "session",
             acknowledged_risks: risk_ids,
         };

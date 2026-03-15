@@ -111,7 +111,9 @@ export function merge_policies_with_overlays(
         // Remove risks by ID
         if (overlay.remove_risks && overlay.remove_risks.length > 0) {
             const remove_set = new Set(overlay.remove_risks);
-            merged.known_risks = merged.known_risks.filter((r) => !remove_set.has(r.id));
+            merged.known_risks = merged.known_risks.filter(
+                (r) => r.protected || !remove_set.has(r.id),
+            );
         }
 
         // Add rules
@@ -615,6 +617,14 @@ export function split_bash_command(command: string): string[] {
             continue;
         }
 
+        // Split on newline (equivalent to ; in bash)
+        if (ch === "\n") {
+            const trimmed = current.trim();
+            if (trimmed) commands.push(trimmed);
+            current = "";
+            continue;
+        }
+
         // Split on ; && ||
         if (ch === ";") {
             const trimmed = current.trim();
@@ -1036,9 +1046,26 @@ function extract_cd_target(sub_cmd: string): string | null {
     const m = sub_cmd.match(/^cd\s+(.+)/);
     if (!m) return null;
 
-    // Tokenize the arguments and skip flags (-P, -L, -e, -@, --)
+    // Quote-aware tokenization of cd arguments
     const args_str = m[1].trim();
-    const tokens = args_str.split(/\s+/);
+    const tokens: string[] = [];
+    let tok = "";
+    let in_sq = false;
+    let in_dq = false;
+    let esc = false;
+    for (const c of args_str) {
+        if (esc) { tok += c; esc = false; continue; }
+        if (c === "\\" && !in_sq) { esc = true; tok += c; continue; }
+        if (c === "'" && !in_dq) { in_sq = !in_sq; tok += c; continue; }
+        if (c === '"' && !in_sq) { in_dq = !in_dq; tok += c; continue; }
+        if (!in_sq && !in_dq && /\s/.test(c)) {
+            if (tok) { tokens.push(tok); tok = ""; }
+            continue;
+        }
+        tok += c;
+    }
+    if (tok) tokens.push(tok);
+
     let target: string | null = null;
     let past_flags = false;
 
@@ -1059,6 +1086,9 @@ function extract_cd_target(sub_cmd: string): string | null {
     }
 
     if (target == null) return homedir(); // cd with only flags = cd home
+
+    // Shell variable expansion — can't determine the actual target
+    if (target.includes("$")) return null;
 
     // Strip surrounding quotes
     if (
@@ -1239,4 +1269,43 @@ export function evaluate(
     };
 
     return evaluate_bash(all_rules, policies.known_risks, tool_name, tool_input, base_ctx);
+}
+
+/**
+ * Validate that all regex patterns in rules and risks compile successfully.
+ * Call after loading/merging policies to catch malformed patterns at startup
+ * rather than silently failing open at evaluation time.
+ */
+export function validate_policy_regexes(
+    policies: PoliciesFile,
+    cwd: string,
+): void {
+    const errors: string[] = [];
+    for (const rule of policies.rules) {
+        if (rule.match) {
+            for (const [key, pattern] of Object.entries(rule.match)) {
+                try {
+                    const substituted = substitute_variables(pattern, cwd, true);
+                    new RegExp(substituted);
+                } catch (e) {
+                    errors.push(`Rule "${rule.id}" match.${key}: ${e instanceof Error ? e.message : String(e)}`);
+                }
+            }
+        }
+    }
+    for (const risk of policies.known_risks) {
+        if (risk.match) {
+            for (const [key, pattern] of Object.entries(risk.match)) {
+                try {
+                    const substituted = substitute_variables(pattern, cwd, true);
+                    new RegExp(substituted);
+                } catch (e) {
+                    errors.push(`Risk "${risk.id}" match.${key}: ${e instanceof Error ? e.message : String(e)}`);
+                }
+            }
+        }
+    }
+    if (errors.length > 0) {
+        throw new Error(`Invalid regex patterns in policies:\n${errors.join("\n")}`);
+    }
 }
