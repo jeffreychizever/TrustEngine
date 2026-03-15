@@ -1512,6 +1512,19 @@ describe("split_bash_command — background operator", () => {
         expect(cmds).toContain("sleep 100");
     });
 
+    it("does not split on & inside redirections (2>&1, >&2, &>file)", () => {
+        expect(split_bash_command("npx tsc --noEmit 2>&1")).toEqual(["npx tsc --noEmit 2>&1"]);
+        expect(split_bash_command("ls >&2")).toEqual(["ls >&2"]);
+        expect(split_bash_command("cmd &>output.log")).toEqual(["cmd &>output.log"]);
+        expect(split_bash_command("cmd &>>output.log")).toEqual(["cmd &>>output.log"]);
+    });
+
+    it("still splits real background & after redirection", () => {
+        const cmds = split_bash_command("cmd 2>&1 & echo done");
+        expect(cmds).toContain("cmd 2>&1");
+        expect(cmds).toContain("echo done");
+    });
+
     it("background dangerous command is individually denied", () => {
         const policies: PoliciesFile = {
             version: 2,

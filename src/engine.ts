@@ -654,6 +654,22 @@ export function split_bash_command(command: string): string[] {
             continue;
         }
 
+        // & as part of redirection (e.g. 2>&1, >&2, &>file, &>>file) — not a separator
+        if (ch === "&") {
+            const prev_ch = i > 0 ? command[i - 1] : "";
+            const next_ch = i + 1 < command.length ? command[i + 1] : "";
+            // >&N or N>&M — & follows a >
+            if (prev_ch === ">") {
+                current += ch;
+                continue;
+            }
+            // &> or &>> — & starts a combined redirect
+            if (next_ch === ">") {
+                current += ch;
+                continue;
+            }
+        }
+
         // Single & (background operator) — treat as command separator
         if (ch === "&") {
             const trimmed = current.trim();
