@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/hook.js",
   "bin": {
-    "trustengine": "dist/cli.js"
+    "trustengine": "dist/cli.js",
+    "trustengine-hook": "dist/hook.js",
+    "trustengine-mcp": "dist/mcp_server.js"
   },
   "scripts": {
     "build": "tsc",

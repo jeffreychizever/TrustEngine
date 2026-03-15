@@ -58,17 +58,22 @@ cd "$(npm root -g)/@jeffreychizever/trustengine"
 Or from source:
 
 ```bash
-git clone https://github.com/jeffreychizever/TrustEngine.git && cd TrustEngine
+git clone https://github.com/jeffreychizever/TrustEngine.git
+cd TrustEngine
+npm install && npm run build && npm install -g .
 ./install.sh
 ```
 
+Installing globally via `npm install -g .` places the built files in your npm prefix
+(e.g., `~/.nvm/.../lib/node_modules/@jeffreychizever/trustengine/`), so the source
+directory remains editable and is not treated as TrustEngine's install location.
+
 The installer will:
-1. Build TypeScript and install dependencies
-2. Create config directory (`~/.config/trustengine/`)
-3. Copy default policies
-4. Configure directory trust (safe/unsafe classification for `/tmp`, `$CWD`, outside CWD)
-5. Add the PreToolUse hook to `~/.claude/settings.json`
-6. Add the MCP server to `~/.claude.json`
+1. Create config directory (`~/.config/trustengine/`)
+2. Copy default policies
+3. Configure directory trust (safe/unsafe classification for `/tmp`, `$CWD`, outside CWD)
+4. Add the PreToolUse hook to `~/.claude/settings.json`
+5. Add the MCP server to `~/.claude.json`
 
 Choose **Full mode** to replace Claude's built-in permissions with TrustEngine, or **Belt-and-suspenders mode** to run both systems in parallel while you validate.
 

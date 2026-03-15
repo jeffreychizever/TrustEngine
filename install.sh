@@ -7,9 +7,18 @@ SESSIONS_DIR="$HOME/.config/trustengine/sessions"
 OVERLAYS_DIR="$HOME/.config/trustengine/overlays"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CLAUDE_GLOBAL="$HOME/.claude.json"
-HOOK_COMMAND="node $SCRIPT_DIR/dist/hook.js"
-MCP_COMMAND="node"
-MCP_ARG="$SCRIPT_DIR/dist/mcp_server.js"
+# Resolve the globally-installed bin commands.
+# If installed via npm install -g, these will be on PATH.
+# Fall back to $SCRIPT_DIR/dist/ for legacy installs.
+if command -v trustengine-hook &>/dev/null; then
+    HOOK_COMMAND="trustengine-hook"
+    MCP_COMMAND="trustengine-mcp"
+    MCP_ARG=""
+else
+    HOOK_COMMAND="node $SCRIPT_DIR/dist/hook.js"
+    MCP_COMMAND="node"
+    MCP_ARG="$SCRIPT_DIR/dist/mcp_server.js"
+fi
 
 echo "=== TrustEngine Installer ==="
 echo
@@ -64,11 +73,12 @@ case "$NOTCWD_UNSAFE" in
 esac
 echo
 
-# 1. Install dependencies and build
-echo "[1/5] Installing dependencies and building..."
-cd "$SCRIPT_DIR"
-npm install
-npm run build
+# 1. Verify build
+echo "[1/5] Verifying installation..."
+if [ ! -f "$SCRIPT_DIR/dist/hook.js" ]; then
+    echo "  ERROR: dist/hook.js not found. Run 'npm install && npm run build && npm install -g .' first."
+    exit 1
+fi
 echo "  Done."
 echo
 
@@ -210,9 +220,10 @@ try { config = JSON.parse(fs.readFileSync(path, 'utf-8')); } catch {}
 
 // Add MCP server
 if (!config.mcpServers) config.mcpServers = {};
+var mcpArgs = process.env.MCP_ARG ? [process.env.MCP_ARG] : [];
 config.mcpServers.trustengine = {
     command: process.env.MCP_COMMAND,
-    args: [process.env.MCP_ARG],
+    args: mcpArgs,
     env: {}
 };
 
@@ -241,5 +252,5 @@ echo
 echo "Restart Claude Code to apply changes."
 echo
 echo "Quick test:"
-echo "  echo '{\"session_id\":\"test\",\"cwd\":\"/tmp\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | node $SCRIPT_DIR/dist/hook.js"
+echo "  echo '{\"session_id\":\"test\",\"cwd\":\"/tmp\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | $HOOK_COMMAND"
 echo
