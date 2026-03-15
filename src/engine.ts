@@ -335,9 +335,11 @@ export function substitute_variables(
     result = result.replace(/\$CWD/g, escaped_cwd);
 
     // $SAFE_CMD: captures a command fragment for recursive evaluation.
-    // Uses lazy .+? so that when multiple $SAFE_CMD appear in one pattern
-    // (e.g. "^$SAFE_CMD \$\($SAFE_CMD\)"), the first capture takes as
-    // little as possible, letting literal anchors like "$(" match.
+    // Uses greedy .+ so the capture consumes the longest possible command
+    // string, relying on surrounding literal anchors (e.g. " && ", " $(",
+    // ")") to constrain the match via backtracking. The previous lazy .+?
+    // could match as little as one character, creating fragile capture
+    // boundaries in security-critical parsing.
     //
     // Processed BEFORE $SAFE/$UNSAFE to avoid partial matching — though
     // $SAFE\b already won't match $SAFE_CMD (since _ is a word character),
@@ -346,7 +348,7 @@ export function substitute_variables(
         let safe_cmd_idx = 0;
         result = result.replace(
             /\$SAFE_CMD\b/g,
-            () => `(?<__safe_cmd_${safe_cmd_idx++}__>.+?)`,
+            () => `(?<__safe_cmd_${safe_cmd_idx++}__>.+)`,
         );
     }
 
@@ -659,6 +661,23 @@ export function split_bash_command(command: string): string[] {
     const trimmed = current.trim();
     if (trimmed) commands.push(trimmed);
 
+    // Strip brace group delimiters ({ cmd; }) from sub-commands.
+    // Only strip standalone { at start and } at end — not ${VAR} expansions.
+    for (let ci = commands.length - 1; ci >= 0; ci--) {
+        let cmd = commands[ci];
+        // Leading "{ " (brace followed by whitespace — not part of ${...})
+        cmd = cmd.replace(/^\{\s+/, "");
+        // Trailing "; }" or " }"
+        cmd = cmd.replace(/\s*;\s*\}$/, "");
+        cmd = cmd.replace(/\s+\}$/, "");
+        cmd = cmd.trim();
+        if (cmd === "" || cmd === "{" || cmd === "}") {
+            commands.splice(ci, 1);
+        } else {
+            commands[ci] = cmd;
+        }
+    }
+
     // Extract commands from backtick substitutions (quote-aware)
     const backtick_cmds = extract_backtick_commands(command);
     commands.push(...backtick_cmds);
@@ -784,9 +803,22 @@ function extract_subshell_commands(command: string): string[] {
             let depth = 1;
             let start = i + 2;
             let j = start;
+            let inner_in_single = false;
+            let inner_in_double = false;
             while (j < command.length && depth > 0) {
-                if (command[j] === "(") depth++;
-                else if (command[j] === ")") depth--;
+                const ic = command[j];
+                if (ic === "\\" && inner_in_double && j + 1 < command.length) {
+                    j += 2; // skip escaped char inside double quotes
+                    continue;
+                }
+                if (ic === "'" && !inner_in_double) {
+                    inner_in_single = !inner_in_single;
+                } else if (ic === '"' && !inner_in_single) {
+                    inner_in_double = !inner_in_double;
+                } else if (!inner_in_single && !inner_in_double) {
+                    if (ic === "(") depth++;
+                    else if (ic === ")") depth--;
+                }
                 j++;
             }
             if (depth === 0) {
@@ -860,9 +892,22 @@ function extract_process_substitution_commands(command: string): string[] {
             let depth = 1;
             let start = i + 2;
             let j = start;
+            let inner_in_single = false;
+            let inner_in_double = false;
             while (j < command.length && depth > 0) {
-                if (command[j] === "(") depth++;
-                else if (command[j] === ")") depth--;
+                const ic = command[j];
+                if (ic === "\\" && inner_in_double && j + 1 < command.length) {
+                    j += 2; // skip escaped char inside double quotes
+                    continue;
+                }
+                if (ic === "'" && !inner_in_double) {
+                    inner_in_single = !inner_in_single;
+                } else if (ic === '"' && !inner_in_single) {
+                    inner_in_double = !inner_in_double;
+                } else if (!inner_in_single && !inner_in_double) {
+                    if (ic === "(") depth++;
+                    else if (ic === ")") depth--;
+                }
                 j++;
             }
             if (depth === 0) {
@@ -999,7 +1044,29 @@ function extract_cd_target(sub_cmd: string): string | null {
     const m = sub_cmd.match(/^cd\s+(.+)/);
     if (!m) return null;
 
-    let target = m[1].trim();
+    // Tokenize the arguments and skip flags (-P, -L, -e, -@, --)
+    const args_str = m[1].trim();
+    const tokens = args_str.split(/\s+/);
+    let target: string | null = null;
+    let past_flags = false;
+
+    for (const tok of tokens) {
+        if (!past_flags) {
+            if (tok === "--") {
+                past_flags = true;
+                continue;
+            }
+            // Skip cd flags: -P, -L, -e, -@ and combinations like -PL
+            if (/^-[PLe@]+$/.test(tok)) {
+                continue;
+            }
+        }
+        // First non-flag token is the target
+        target = tok;
+        break;
+    }
+
+    if (target == null) return homedir(); // cd with only flags = cd home
 
     // Strip surrounding quotes
     if (
@@ -1072,7 +1139,12 @@ function evaluate_bash(
 
     const failures: { sub_cmd: string; result: EvaluationResult }[] = [];
     const all_risks: KnownRisk[] = [];
-    const once_grants: string[] = [];
+    // Seed once_grants with any consumed from the full-command pre-check,
+    // so that once-scoped grants matched against the unsplit command are
+    // properly tracked and removed after evaluation.
+    const once_grants: string[] = [
+        ...(full_check.once_grants_consumed ?? []),
+    ];
 
     // Track effective CWD through cd commands within this bash invocation.
     // $CWD/$NOTCWD stay bound to the original cwd — only $SAFE/$UNSAFE

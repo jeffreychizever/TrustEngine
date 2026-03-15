@@ -1124,9 +1124,9 @@ describe("rules without $SAFE/$UNSAFE (regression)", () => {
 // ---------------------------------------------------------------------------
 
 describe("substitute_variables $SAFE_CMD", () => {
-    it("produces named capture group with lazy quantifier", () => {
+    it("produces named capture group with greedy quantifier", () => {
         const result = substitute_variables("^$SAFE_CMD end", "/cwd");
-        expect(result).toContain("(?<__safe_cmd_0__>.+?)");
+        expect(result).toContain("(?<__safe_cmd_0__>.+)");
     });
 
     it("assigns unique indices to multiple $SAFE_CMD", () => {

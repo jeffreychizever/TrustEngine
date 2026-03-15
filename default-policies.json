@@ -1,5 +1,5 @@
 {
-    "version": 3,
+    "version": 4,
     "rules": [
         {
             "id": "deny-dangerous-bash",
@@ -51,7 +51,7 @@
             "id": "deny-curl-mutating",
             "tool": "Bash",
             "match": {
-                "command": "^curl\\b.*\\s(-X|--request|-d|--data|-F|--form|-T|--upload-file)\\b"
+                "command": "^curl\\b.*\\s(-[a-zA-Z]*(X|d|F|T)|--request|--data|--form|--upload-file)\\b"
             },
             "action": "deny",
             "priority": 85,
