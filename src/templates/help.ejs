@@ -57,3 +57,25 @@ The human reviews the exact script content before approving.
 
 On approval, TrustEngine writes the script to a trusted directory and returns the command to run it.
 The scripts directory is protected — agents cannot write to it directly.
+
+## Async Agent Mode
+
+For child agents or cron-triggered agents that run without a human available to approve permissions.
+
+Session IDs starting with `async-` are treated as async mode. In async mode:
+- **grant_permission** is disabled (no human available to approve)
+- **check_permission** and **acknowledge_risk** work normally
+- Use check_permission to discover what's already allowed
+- Work within pre-provisioned permissions
+
+### For parent agents provisioning async sessions:
+1. Generate a session ID: `"async-"` + a unique identifier
+2. Call grant_permission with `session_id` set to the async session ID for each needed permission (human approves these)
+3. Include the async session ID in the child agent's prompt
+
+### For child agents using async sessions:
+1. Call `apply_async_session(async_session_id="async-xxx")` with the ID from the parent
+2. This copies pre-provisioned grants into your session and enables async mode
+3. Use check_permission to verify what's available before attempting tool calls
+4. Use acknowledge_risk for acknowledge-tier risks (no human needed)
+5. If you need permissions that aren't available, document what you need for the parent to provision next time

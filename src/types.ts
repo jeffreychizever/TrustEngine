@@ -59,6 +59,7 @@ export interface SessionFile {
     session_id: string;
     grants: TrustRule[];
     created_at: string;
+    mode?: "interactive" | "async";
 }
 
 export interface EvaluationResult {

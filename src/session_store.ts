@@ -143,6 +143,70 @@ export async function read_session_breadcrumb(): Promise<string | null> {
     }
 }
 
+export function is_async_session(session_id: string): boolean {
+    return session_id.startsWith("async-");
+}
+
+export async function load_session_mode(
+    session_id: string,
+): Promise<string | undefined> {
+    try {
+        const raw = await readFile(session_path(session_id), "utf-8");
+        const data = JSON.parse(raw) as SessionFile;
+        return data.mode;
+    } catch {
+        return undefined;
+    }
+}
+
+export async function apply_async_session(
+    target_session_id: string,
+    async_session_id: string,
+): Promise<{ grants_copied: number; error?: string }> {
+    if (!is_async_session(async_session_id)) {
+        return { grants_copied: 0, error: "async_session_id must start with 'async-'" };
+    }
+
+    validate_session_id(async_session_id);
+    validate_session_id(target_session_id);
+
+    // Load grants from async session
+    const async_grants = await load_session_grants(async_session_id);
+    if (async_grants.length === 0) {
+        return { grants_copied: 0, error: `No grants found in async session "${async_session_id}"` };
+    }
+
+    await ensure_sessions_dir();
+    const lock = session_path(target_session_id) + ".lock";
+    let grants_copied = 0;
+
+    await with_file_lock(lock, async () => {
+        const existing = await load_session_grants(target_session_id);
+        const existing_ids = new Set(existing.map((g) => g.id));
+
+        // Add grants that aren't already present (dedup by rule ID)
+        for (const grant of async_grants) {
+            if (!existing_ids.has(grant.id)) {
+                existing.push(grant);
+                grants_copied++;
+            }
+        }
+
+        const session_file: SessionFile = {
+            session_id: target_session_id,
+            grants: existing,
+            created_at: new Date().toISOString(),
+            mode: "async",
+        };
+        await atomic_write(
+            session_path(target_session_id),
+            JSON.stringify(session_file, null, 4),
+        );
+    });
+
+    return { grants_copied };
+}
+
 export async function clear_session(session_id: string): Promise<void> {
     try {
         await unlink(session_path(session_id));

@@ -14,6 +14,9 @@ import type { PoliciesFile, OverlayFile, TrustRule, KnownRisk } from "./types.js
 import {
     add_session_grant,
     read_session_breadcrumb,
+    is_async_session,
+    load_session_mode,
+    apply_async_session,
 } from "./session_store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -399,6 +402,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 required: ["risk_ids", "tool"],
             },
         },
+        {
+            name: "apply_async_session",
+            description:
+                "Apply a pre-provisioned async session to your current session. " +
+                "Copies grants from the async session into your session and marks " +
+                "it as async mode (grant_permission disabled). Call this at the " +
+                "start of an async agent run with the session ID provided by the parent.",
+            inputSchema: {
+                type: "object" as const,
+                properties: {
+                    async_session_id: {
+                        type: "string",
+                        description:
+                            "The async session ID provided by the parent agent (starts with 'async-')",
+                    },
+                },
+                required: ["async_session_id"],
+            },
+        },
     ],
 }));
 
@@ -439,6 +461,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         if (result.denied_commands && result.denied_commands.length > 0) {
             text += `\n\nDenied commands: ${result.denied_commands.join(", ")}`;
+        }
+
+        const mode = session_id ? await load_session_mode(session_id) : undefined;
+        if (mode === "async" || (session_id && is_async_session(session_id))) {
+            text += "\n\nSession mode: async (grant_permission disabled)";
         }
 
         return {
@@ -530,6 +557,56 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     `  Tool: ${tool}\n` +
                     `  Match: ${match ? JSON.stringify(match) : "(any)"}\n\n` +
                     `You may now retry the tool call.`,
+            }],
+        };
+    }
+
+    if (request.params.name === "apply_async_session") {
+        const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+        const async_session_id = args.async_session_id as string | undefined;
+
+        if (!async_session_id) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: "Error: 'async_session_id' is required.",
+                }],
+                isError: true,
+            };
+        }
+
+        const current_session = await read_session_breadcrumb();
+        if (!current_session) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: "Error: no active session detected. Ensure the hook has run at least once.",
+                }],
+                isError: true,
+            };
+        }
+
+        const result = await apply_async_session(current_session, async_session_id);
+        if (result.error) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Error: ${result.error}`,
+                }],
+                isError: true,
+            };
+        }
+
+        return {
+            content: [{
+                type: "text" as const,
+                text:
+                    `Async session applied:\n` +
+                    `  Source: ${async_session_id}\n` +
+                    `  Target: ${current_session}\n` +
+                    `  Grants copied: ${result.grants_copied}\n` +
+                    `  Mode: async (grant_permission disabled)\n\n` +
+                    `Use check_permission to verify what's available.`,
             }],
         };
     }
