@@ -111,11 +111,11 @@
             "id": "deny-sed-dangerous-flags",
             "tool": "Bash",
             "match": {
-                "command": "^sed +.*(-[efi]\\b|/e(\\b| ))"
+                "command": "^sed +.*(-[fi]\\b|/e(\\b| ))"
             },
             "action": "deny",
             "priority": 75,
-            "description": "Block sed -e/-f/-i and s///e (script execution and in-place modification)"
+            "description": "Block sed -f/-i and s///e (script loading and in-place modification)"
         },
         {
             "id": "deny-cp-mv-target-flag",
@@ -152,7 +152,7 @@
             "id": "allow-system-info",
             "tool": "Bash",
             "match": {
-                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|env|printenv|set|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq)\\b"
+                "command": "^(ls|cat|head|tail|wc|echo|printf|date|pwd|whoami|uname|which|type|file|stat|du|df|free|uptime|id|groups|hostname|basename|dirname|realpath|readlink|test|true|false|seq)\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -192,7 +192,7 @@
             "id": "allow-node-ecosystem",
             "tool": "Bash",
             "match": {
-                "command": "^(npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run))\\b"
+                "command": "^(npm +(test|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|node +(--version|-v)|yarn +(test|list|info|why)|pnpm +(test|list|ls|why)|bun +test)\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -202,7 +202,7 @@
             "id": "allow-rust-go-python",
             "tool": "Bash",
             "match": {
-                "command": "^(cargo +(test|check|clippy|build|bench|doc|fmt)|rustc +--version|go +(test|vet|build|run|fmt|doc)|python3? +-m +(pytest|unittest|json\\.tool|py_compile|compileall)|pip3? +(list|show|freeze))\\b"
+                "command": "^(cargo +(test|check|clippy|build|bench|doc|fmt)|rustc +--version|go +(test|vet|build|fmt|doc)|python3? +-m +(pytest|unittest|json\\.tool|py_compile|compileall)|pip3? +(list|show|freeze))\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -242,7 +242,7 @@
             "id": "allow-linters",
             "tool": "Bash",
             "match": {
-                "command": "^(tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|black|isort|gofmt|rustfmt)\\b"
+                "command": "^(tsc|eslint_d|flake8|rubocop|cpplint|shellcheck|luacheck|checkstyle|prettier|gofmt|rustfmt)\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -339,6 +339,15 @@
             "severity": "escalate"
         },
         {
+            "id": "risk-env-dump",
+            "tool": "Bash",
+            "match": {
+                "command": "(^|[;&|] *)(env|printenv|set)\\b"
+            },
+            "risk": "env/printenv/set dump all environment variables, which may contain secrets (API keys, tokens, credentials)",
+            "severity": "acknowledge"
+        },
+        {
             "id": "risk-env-secrets",
             "tool": "Write|Edit",
             "match": {
@@ -366,12 +375,12 @@
             "severity": "acknowledge"
         },
         {
-            "id": "risk-post-install-scripts",
+            "id": "risk-build-run-scripts",
             "tool": "Bash",
             "match": {
-                "command": "(^|[;&|] *)(npm +(install|ci|i)\\b|make\\b|cmake\\b)"
+                "command": "(^|[;&|] *)(npm +(install|ci|i|run)\\b|yarn +run\\b|pnpm +run\\b|bun +run\\b|make\\b|cmake\\b)"
             },
-            "risk": "Build/install commands can execute arbitrary post-install scripts",
+            "risk": "Build/install/run commands can execute arbitrary scripts",
             "severity": "escalate"
         },
         {

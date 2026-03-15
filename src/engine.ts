@@ -667,6 +667,10 @@ export function split_bash_command(command: string): string[] {
     const subshell_cmds = extract_subshell_commands(command);
     commands.push(...subshell_cmds);
 
+    // Extract commands from <() and >() process substitutions
+    const procsub_cmds = extract_process_substitution_commands(command);
+    commands.push(...procsub_cmds);
+
     return commands;
 }
 
@@ -777,6 +781,82 @@ function extract_subshell_commands(command: string): string[] {
 
         // Only extract $() outside of single quotes
         if (ch === "$" && !in_single_quote && i + 1 < command.length && command[i + 1] === "(") {
+            let depth = 1;
+            let start = i + 2;
+            let j = start;
+            while (j < command.length && depth > 0) {
+                if (command[j] === "(") depth++;
+                else if (command[j] === ")") depth--;
+                j++;
+            }
+            if (depth === 0) {
+                const inner = command.slice(start, j - 1).trim();
+                if (inner) {
+                    const inner_cmds = split_bash_command(inner);
+                    results.push(...inner_cmds);
+                }
+            }
+            i = j;
+        } else {
+            i++;
+        }
+    }
+
+    return results;
+}
+
+function extract_process_substitution_commands(command: string): string[] {
+    const results: string[] = [];
+    let in_single_quote = false;
+    let in_double_quote = false;
+    let escape_next = false;
+    let i = 0;
+
+    while (i < command.length) {
+        const ch = command[i];
+
+        if (escape_next) {
+            escape_next = false;
+            i++;
+            continue;
+        }
+
+        if (ch === "\\" && !in_single_quote) {
+            escape_next = true;
+            i++;
+            continue;
+        }
+
+        if (ch === "'" && !in_double_quote) {
+            in_single_quote = !in_single_quote;
+            i++;
+            continue;
+        }
+
+        if (ch === '"' && !in_single_quote) {
+            in_double_quote = !in_double_quote;
+            i++;
+            continue;
+        }
+
+        // Only extract <() and >() outside of single quotes
+        if (
+            !in_single_quote &&
+            (ch === "<" || ch === ">") &&
+            i + 1 < command.length &&
+            command[i + 1] === "("
+        ) {
+            // For <(, make sure the previous char is not < (avoid <<( )
+            if (ch === "<" && i > 0 && command[i - 1] === "<") {
+                i++;
+                continue;
+            }
+            // For >(, make sure the previous char is not > (avoid >>( )
+            if (ch === ">" && i > 0 && command[i - 1] === ">") {
+                i++;
+                continue;
+            }
+
             let depth = 1;
             let start = i + 2;
             let j = start;

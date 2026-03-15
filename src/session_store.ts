@@ -56,9 +56,8 @@ async function with_file_lock<T>(
             throw err;
         }
     }
-    // Final attempt — force-remove stale lock and try once more
-    await unlink(lock_path).catch(() => {});
-    return fn();
+    // All retries exhausted — fail rather than risk concurrent access
+    throw new Error(`Failed to acquire file lock: ${lock_path} (held by another process after ${retries} retries)`);
 }
 
 export async function load_session_grants(
@@ -83,12 +82,23 @@ export async function add_session_grant(
     await ensure_sessions_dir();
     const lock = session_path(session_id) + ".lock";
     await with_file_lock(lock, async () => {
-        const existing = await load_session_grants(session_id);
-        existing.push(rule);
+        let existing_created_at: string | undefined;
+        let existing_grants: TrustRule[] = [];
+        try {
+            const raw = await readFile(session_path(session_id), "utf-8");
+            const data = JSON.parse(raw) as SessionFile;
+            existing_grants = data.grants ?? [];
+            existing_created_at = data.created_at;
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+                throw err;
+            }
+        }
+        existing_grants.push(rule);
         const session_file: SessionFile = {
             session_id,
-            grants: existing,
-            created_at: new Date().toISOString(),
+            grants: existing_grants,
+            created_at: existing_created_at ?? new Date().toISOString(),
         };
         await atomic_write(
             session_path(session_id),
@@ -104,7 +114,18 @@ export async function consume_once_grant(
     await ensure_sessions_dir();
     const lock = session_path(session_id) + ".lock";
     await with_file_lock(lock, async () => {
-        const grants = await load_session_grants(session_id);
+        let existing_created_at: string | undefined;
+        let grants: TrustRule[] = [];
+        try {
+            const raw = await readFile(session_path(session_id), "utf-8");
+            const data = JSON.parse(raw) as SessionFile;
+            grants = data.grants ?? [];
+            existing_created_at = data.created_at;
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+                throw err;
+            }
+        }
         const updated = grants.filter(
             (g) => !(g.id === rule_id && g.scope === "once"),
         );
@@ -116,7 +137,7 @@ export async function consume_once_grant(
         const session_file: SessionFile = {
             session_id,
             grants: updated,
-            created_at: new Date().toISOString(),
+            created_at: existing_created_at ?? new Date().toISOString(),
         };
         await atomic_write(
             session_path(session_id),
@@ -181,7 +202,18 @@ export async function apply_async_session(
     let grants_copied = 0;
 
     await with_file_lock(lock, async () => {
-        const existing = await load_session_grants(target_session_id);
+        let existing_created_at: string | undefined;
+        let existing: TrustRule[] = [];
+        try {
+            const raw = await readFile(session_path(target_session_id), "utf-8");
+            const data = JSON.parse(raw) as SessionFile;
+            existing = data.grants ?? [];
+            existing_created_at = data.created_at;
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+                throw err;
+            }
+        }
         const existing_ids = new Set(existing.map((g) => g.id));
 
         // Add grants that aren't already present (dedup by rule ID)
@@ -195,7 +227,7 @@ export async function apply_async_session(
         const session_file: SessionFile = {
             session_id: target_session_id,
             grants: existing,
-            created_at: new Date().toISOString(),
+            created_at: existing_created_at ?? new Date().toISOString(),
             mode: "async",
         };
         await atomic_write(
