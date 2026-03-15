@@ -1,5 +1,5 @@
 {
-    "version": 2,
+    "version": 3,
     "rules": [
         {
             "id": "deny-dangerous-bash",
@@ -288,8 +288,7 @@
             },
             "action": "allow",
             "priority": 62,
-            "description": "Allow commands with $() subshells where both pass evaluation",
-            "acknowledged_risks": ["risk-metachar-injection"]
+            "description": "Allow commands with $() subshells where both pass evaluation"
         },
         {
             "id": "allow-git-commit",
@@ -356,15 +355,6 @@
             },
             "risk": "npm publish pushes packages to public registry — this is irreversible",
             "severity": "block"
-        },
-        {
-            "id": "risk-metachar-injection",
-            "tool": "Bash",
-            "match": {
-                "command": "\\$\\(|`[^`]*`|\\$\\{"
-            },
-            "risk": "Command contains shell substitution ($(), backticks, ${}) — verify the expanded command is safe",
-            "severity": "escalate"
         },
         {
             "id": "risk-redirect",

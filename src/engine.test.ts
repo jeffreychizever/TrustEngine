@@ -1250,7 +1250,6 @@ describe("$SAFE_CMD subshell evaluation", () => {
                     action: "allow",
                     priority: 62,
                     description: "Allow commands with safe $() subshells",
-                    acknowledged_risks: ["risk-metachar-injection"],
                 },
                 {
                     id: "allow-system-info",
@@ -1262,13 +1261,6 @@ describe("$SAFE_CMD subshell evaluation", () => {
                 },
             ],
             known_risks: [
-                {
-                    id: "risk-metachar-injection",
-                    tool: "Bash",
-                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
-                    risk: "Shell substitution",
-                    severity: "escalate",
-                },
                 {
                     id: "risk-network",
                     tool: "Bash",
@@ -1329,7 +1321,6 @@ describe("$SAFE_CMD depth limiting", () => {
                     action: "allow",
                     priority: 62,
                     description: "Allow safe subshells",
-                    acknowledged_risks: ["risk-metachar-injection"],
                 },
                 {
                     id: "allow-system-info",
@@ -1340,15 +1331,7 @@ describe("$SAFE_CMD depth limiting", () => {
                     description: "Allow safe commands",
                 },
             ],
-            known_risks: [
-                {
-                    id: "risk-metachar-injection",
-                    tool: "Bash",
-                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
-                    risk: "Shell substitution",
-                    severity: "escalate",
-                },
-            ],
+            known_risks: [],
         };
     }
 
@@ -1383,7 +1366,7 @@ describe("$SAFE_CMD combined with $SAFE", () => {
                     action: "allow",
                     priority: 62,
                     description: "Allow safe redirect to safe dir",
-                    acknowledged_risks: ["risk-redirect", "risk-metachar-injection"],
+                    acknowledged_risks: ["risk-redirect"],
                 },
                 {
                     id: "allow-safe-subshell",
@@ -1392,7 +1375,6 @@ describe("$SAFE_CMD combined with $SAFE", () => {
                     action: "allow",
                     priority: 62,
                     description: "Allow safe subshells",
-                    acknowledged_risks: ["risk-metachar-injection"],
                 },
                 {
                     id: "allow-system-info",
@@ -1410,13 +1392,6 @@ describe("$SAFE_CMD combined with $SAFE", () => {
                     match: { command: "[^2]>(?!/dev/null)" },
                     risk: "Redirect",
                     severity: "acknowledge",
-                },
-                {
-                    id: "risk-metachar-injection",
-                    tool: "Bash",
-                    match: { command: "\\$\\(|`[^`]*`|\\$\\{" },
-                    risk: "Shell substitution",
-                    severity: "escalate",
                 },
             ],
             safe_directories: ["/tmp"],
