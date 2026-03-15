@@ -69,7 +69,7 @@
             "id": "allow-curl-output-safe",
             "tool": "Bash",
             "match": {
-                "command": "^curl\\b.*\\s(-o|--output) +$SAFE/"
+                "command": "^curl\\b.*\\s(-o|--output) $SAFE/"
             },
             "action": "allow",
             "priority": 82,
