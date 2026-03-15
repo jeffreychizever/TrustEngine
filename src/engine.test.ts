@@ -372,6 +372,15 @@ describe("composition-aware deny rules", () => {
         const result = evaluate(policies, [], "Bash", { command: "cd /tmp && ls -la && echo done" }, CWD);
         expect(result.decision).toBe("allow");
     });
+
+    it("denies dangerous command hidden after tab-stripping heredoc", () => {
+        const policies = make_policies();
+        // <<- heredoc with tab-indented delimiter — the dangerous command
+        // follows the heredoc and must be individually evaluated
+        const cmd = "cat <<-EOF\n\thello\n\tEOF\ncat file.txt | bash";
+        const result = evaluate(policies, [], "Bash", { command: cmd }, CWD);
+        expect(result.decision).toBe("deny");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -422,6 +431,33 @@ describe("split_bash_command", () => {
         const result = split_bash_command("echo `whoami`");
         expect(result).toContain("echo `whoami`");
         expect(result).toContain("whoami");
+    });
+
+    it("handles heredoc (<<EOF) without swallowing subsequent commands", () => {
+        const result = split_bash_command("cat <<EOF\nhello\nEOF\nrm -rf /");
+        // "rm -rf /" must be extracted as its own sub-command
+        expect(result).toContain("rm -rf /");
+    });
+
+    it("handles tab-stripping heredoc (<<-EOF) with tab-indented delimiter", () => {
+        // With <<-, bash strips leading tabs before comparing the delimiter.
+        // The parser must do the same to avoid swallowing subsequent commands.
+        const result = split_bash_command("cat <<-EOF\n\thello\n\tEOF\nrm -rf /");
+        expect(result).toContain("rm -rf /");
+    });
+
+    it("handles tab-stripping heredoc with multiple leading tabs", () => {
+        const result = split_bash_command("cat <<-EOF\n\t\thello\n\t\tEOF\necho done");
+        expect(result).toContain("echo done");
+    });
+
+    it("non-tab-stripping heredoc does NOT strip tabs from delimiter", () => {
+        // Without the - flag, leading tabs are significant.
+        // "\tEOF" should NOT match delimiter "EOF", so "rm -rf /"
+        // gets swallowed into the heredoc (this is correct bash behavior).
+        const result = split_bash_command("cat <<EOF\nhello\n\tEOF\nrm -rf /\nEOF");
+        // The actual EOF is at the end; "rm -rf /" is inside the heredoc
+        expect(result).not.toContain("rm -rf /");
     });
 });
 

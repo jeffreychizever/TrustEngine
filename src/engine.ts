@@ -531,8 +531,11 @@ export function split_bash_command(command: string): string[] {
         ) {
             current += "<<";
             let j = i + 2;
-            // Optional '-' for tab-stripping heredocs
+            // Optional '-' for tab-stripping heredocs (<<- strips leading tabs
+            // before comparing the delimiter line)
+            let is_tab_stripping = false;
             if (j < command.length && command[j] === "-") {
+                is_tab_stripping = true;
                 current += "-";
                 j++;
             }
@@ -570,14 +573,24 @@ export function split_bash_command(command: string): string[] {
                     current += command[j];
                     // Check if we're at a newline followed by the delimiter on its own line
                     if (command[j] === "\n") {
-                        const remaining = command.slice(j + 1);
+                        let remaining = command.slice(j + 1);
+                        // For <<- heredocs, bash strips leading tabs before
+                        // comparing the delimiter. We must do the same to
+                        // avoid swallowing commands that follow the heredoc.
+                        let leading_tabs = 0;
+                        if (is_tab_stripping) {
+                            while (leading_tabs < remaining.length && remaining[leading_tabs] === "\t") {
+                                leading_tabs++;
+                            }
+                            remaining = remaining.slice(leading_tabs);
+                        }
                         if (
                             remaining === delimiter ||
                             remaining.startsWith(delimiter + "\n") ||
                             remaining.startsWith(delimiter + "\r")
                         ) {
-                            // Consume the delimiter
-                            for (let k = 0; k < delimiter.length; k++) {
+                            // Consume the leading tabs and delimiter
+                            for (let k = 0; k < leading_tabs + delimiter.length; k++) {
                                 j++;
                                 current += command[j];
                             }

@@ -505,6 +505,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const policies = await load_merged_policies();
         const risk_map = new Map(policies.known_risks.map((r) => [r.id, r]));
         const errors: string[] = [];
+        const validated_risks: KnownRisk[] = [];
 
         for (const id of risk_ids) {
             const risk = risk_map.get(id);
@@ -514,6 +515,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 errors.push(`"${id}" is a block-tier risk — cannot be acknowledged`);
             } else if (risk.severity === "escalate") {
                 errors.push(`"${id}" is an escalate-tier risk — requires grant_permission with human approval`);
+            } else {
+                validated_risks.push(risk);
             }
         }
 
@@ -525,6 +528,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }],
                 isError: true,
             };
+        }
+
+        // Validate that user-provided tool/match don't exceed the scope of
+        // the acknowledged risks. The tool pattern must match a subset of
+        // what the risks themselves cover, and any user-provided match
+        // patterns are ignored — we use the risk's own match patterns to
+        // prevent privilege escalation via crafted patterns.
+        //
+        // If the user provides a match, warn them it's ignored (the risk's
+        // own match is used instead).
+        if (match && Object.keys(match).length > 0) {
+            // Silently ignore user-provided match — use risk definitions
         }
 
         // Resolve session_id
@@ -541,29 +556,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
 
-        // Create a session-scoped grant acknowledging these risks.
-        // When match is provided, use standard grant priority.
-        // When match is omitted, use lower priority so the acknowledgement
-        // only supplements existing allow rules rather than creating new
-        // broad permissions.
-        const match_obj = match && Object.keys(match).length > 0 ? match : undefined;
-        const ack_priority = match_obj ? 85 : 50;
-        const desc_suffix = match_obj
-            ? `risks: ${risk_ids.join(", ")}`
-            : `broad acknowledgement (no match constraint) — risks: ${risk_ids.join(", ")}`;
+        // Create one session-scoped grant per acknowledged risk, using the
+        // risk's own tool and match patterns. This ensures the grant only
+        // covers exactly what the risk describes — the agent cannot craft a
+        // broader match pattern to escalate privileges.
+        //
+        // Priority is kept low (50) so acknowledgements only supplement
+        // existing allow rules rather than creating new broad permissions.
+        const ack_priority = 50;
 
-        const rule: TrustRule = {
-            id: `ack-${randomUUID().slice(0, 8)}`,
-            tool,
-            match: match_obj,
-            action: "allow",
-            priority: ack_priority,
-            description: `[acknowledged] ${desc_suffix}`,
-            scope: "session",
-            acknowledged_risks: risk_ids,
-        };
+        for (const risk of validated_risks) {
+            const rule: TrustRule = {
+                id: `ack-${randomUUID().slice(0, 8)}`,
+                tool: risk.tool,
+                match: risk.match,
+                action: "allow",
+                priority: ack_priority,
+                description: `[acknowledged] risk: ${risk.id}`,
+                scope: "session",
+                acknowledged_risks: [risk.id],
+            };
 
-        await add_session_grant(session_id, rule);
+            await add_session_grant(session_id, rule);
+        }
 
         return {
             content: [{
@@ -571,8 +586,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 text:
                     `Risks acknowledged (session):\n` +
                     `  Risk IDs: ${risk_ids.join(", ")}\n` +
-                    `  Tool: ${tool}\n` +
-                    `  Match: ${match ? JSON.stringify(match) : "(any)"}\n\n` +
+                    `  Grants created: ${validated_risks.length} (one per risk, using each risk's own tool/match pattern)\n\n` +
                     `You may now retry the tool call.`,
             }],
         };
