@@ -177,6 +177,9 @@ function resolve_match_path(captured: string, effective_cwd: string): string {
         p = p.slice(1, -1);
     }
 
+    // Strip backslash escapes (e.g. my\ file.txt → my file.txt)
+    p = p.replace(/\\(.)/g, "$1");
+
     // Expand ~
     if (p === "~") return homedir();
     if (p.startsWith("~/")) {
@@ -243,8 +246,11 @@ function validate_path_captures(
  * Substitute policy macros in a regex pattern:
  * - $CWD → escaped literal cwd (regex macro, never changes with cd)
  * - $NOTCWD → negative lookahead for cwd (regex macro, never changes with cd)
- * - $SAFE/ → named capture group (\S+), trailing / consumed
- * - $UNSAFE/ → named capture group (\S+), trailing / consumed
+ * - $SAFE/ → named capture group, trailing / consumed
+ * - $UNSAFE/ → named capture group, trailing / consumed
+ *
+ * The capture group matches non-whitespace characters plus backslash-escaped
+ * spaces (e.g. my\ file.txt), so paths with escaped spaces are captured whole.
  *
  * $SAFE and $UNSAFE captures are validated post-match via validate_path_captures.
  */
@@ -260,16 +266,20 @@ export function substitute_variables(
     // Replace $SAFE and $UNSAFE with named capture groups.
     // \b prevents matching inside other macro names.
     // \/? consumes an optional trailing / (the directory separator in patterns).
+    // The capture pattern matches non-whitespace OR backslash-escaped characters
+    // (e.g. backslash-space in "my\ file.txt"), so escaped-space paths work.
     let safe_idx = 0;
     let unsafe_idx = 0;
+    const path_capture = "(?:[^\\s]|\\\\.)+";
+
 
     result = result.replace(
         /\$SAFE\b\/?/g,
-        () => `(?<__safe_${safe_idx++}__>\\S+)`,
+        () => `(?<__safe_${safe_idx++}__>${path_capture})`,
     );
     result = result.replace(
         /\$UNSAFE\b\/?/g,
-        () => `(?<__unsafe_${unsafe_idx++}__>\\S+)`,
+        () => `(?<__unsafe_${unsafe_idx++}__>${path_capture})`,
     );
 
     return result;

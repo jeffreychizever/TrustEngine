@@ -667,6 +667,87 @@ describe("matches_rule with bash $SAFE commands", () => {
             { command: "cp x ../../etc/passwd" }, ctx,
         )).toBe(false);
     });
+
+    it("handles double-quoted path argument", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: 'cp foo "/tmp/bar.txt"' }, ctx,
+        )).toBe(true);
+    });
+
+    it("handles single-quoted path argument", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo '/tmp/bar.txt'" }, ctx,
+        )).toBe(true);
+    });
+
+    it("handles ~ expansion to home directory", () => {
+        const home = require("os").homedir();
+        const ctx = make_ctx({
+            safe: { dirs: [home, "/tmp"], has_notcwd: false },
+        });
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo ~/documents/bar.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects ~ when home is not in safe dirs", () => {
+        const ctx = make_ctx({
+            safe: { dirs: ["/tmp"], has_notcwd: false },
+        });
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo ~/bar.txt" }, ctx,
+        )).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Path quoting and escaping
+// ---------------------------------------------------------------------------
+
+describe("path quoting and escaping", () => {
+    const write_safe_rule: TrustRule = {
+        id: "allow-write-safe",
+        tool: "Write",
+        match: { file_path: "^$SAFE/" },
+        action: "allow",
+        priority: 70,
+        description: "Allow writes in safe dirs",
+    };
+
+    it("handles file_path with backslash-escaped spaces", () => {
+        // For file_path patterns (no .* prefix), the capture group matches
+        // the full path including escaped spaces, and resolve_match_path
+        // strips the backslash escapes.
+        const ctx = make_ctx();
+        expect(matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/tmp/my\\ file.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects file_path with escaped spaces to unsafe dir", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/etc/my\\ file.txt" }, ctx,
+        )).toBe(false);
+    });
+
+    // NOTE: Backslash-escaped spaces in bash command patterns with .*
+    // (e.g. "^cp\b.* $SAFE/") do NOT work reliably. The .* is greedy
+    // and consumes the backslash, then the literal space in the pattern
+    // matches the escaped space. The capture group only gets the part
+    // after the space. This is a known limitation — fixing it requires
+    // bash-aware argument parsing rather than regex matching.
+    //
+    // Quoted paths (double/single quotes) DO work because they contain
+    // no unescaped spaces for .* to match.
 });
 
 // ---------------------------------------------------------------------------
@@ -732,6 +813,245 @@ describe("evaluate cd tracking", () => {
             make_cd_policies(), [], "Bash",
             { command: "cd / && cp foo.txt /etc/passwd" },
             "/home/user/project",
+        );
+        expect(result.decision).toBe("deny");
+    });
+
+    it("bare cd goes to home directory", () => {
+        const home = require("os").homedir();
+        const policies = make_cd_policies();
+        policies.safe_directories!.push(home);
+
+        const result = evaluate(
+            policies, [], "Bash",
+            { command: "cd && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        // After bare cd, effective_cwd = homedir. cp bar.txt resolves
+        // to ~/bar.txt which is under home (added to safe dirs).
+        expect(result.decision).toBe("allow");
+    });
+
+    it("cd ~ goes to home directory", () => {
+        const home = require("os").homedir();
+        const policies = make_cd_policies();
+        policies.safe_directories!.push(home);
+
+        const result = evaluate(
+            policies, [], "Bash",
+            { command: "cd ~ && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("cd - is ignored (effective_cwd unchanged)", () => {
+        // cd - goes to previous dir, which we can't track.
+        // effective_cwd stays at its previous value (the original CWD).
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: "cd /tmp && cd - && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        // After cd /tmp, effective_cwd = /tmp.
+        // cd - can't be tracked so effective_cwd stays /tmp.
+        // cp bar.txt resolves to /tmp/bar.txt which is safe.
+        expect(result.decision).toBe("allow");
+    });
+
+    it("chained cd commands accumulate", () => {
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: "cd /tmp && cd subdir && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        // effective_cwd = /tmp, then /tmp/subdir
+        // cp bar.txt resolves to /tmp/subdir/bar.txt which is under /tmp (safe)
+        expect(result.decision).toBe("allow");
+    });
+
+    it("cd with quoted path", () => {
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: 'cd "/tmp" && cp foo.txt bar.txt' },
+            "/home/user/project",
+        );
+        expect(result.decision).toBe("allow");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// find_matching_risks with EvalContext
+// ---------------------------------------------------------------------------
+
+describe("find_matching_risks with EvalContext", () => {
+    const risks: KnownRisk[] = [
+        {
+            id: "risk-rm",
+            tool: "Bash",
+            match: { command: "(^|[;&|] *)rm\\b" },
+            risk: "File deletion",
+            severity: "escalate",
+        },
+        {
+            id: "risk-network",
+            tool: "Bash",
+            match: { command: "(^|[;&|] *)curl\\b" },
+            risk: "Network request",
+            severity: "escalate",
+        },
+        {
+            id: "risk-env",
+            tool: "Write|Edit",
+            match: { file_path: "\\.env" },
+            risk: "Secrets file",
+            severity: "escalate",
+        },
+    ];
+
+    it("matches bash risks by command pattern", () => {
+        const ctx = make_ctx();
+        const matched = find_matching_risks(risks, "Bash", { command: "rm -rf foo" }, ctx);
+        expect(matched).toHaveLength(1);
+        expect(matched[0].id).toBe("risk-rm");
+    });
+
+    it("matches Write risks by file_path pattern", () => {
+        const ctx = make_ctx();
+        const matched = find_matching_risks(risks, "Write", { file_path: "/home/user/.env" }, ctx);
+        expect(matched).toHaveLength(1);
+        expect(matched[0].id).toBe("risk-env");
+    });
+
+    it("returns empty for unmatched tool", () => {
+        const ctx = make_ctx();
+        const matched = find_matching_risks(risks, "Read", { file_path: "/etc/passwd" }, ctx);
+        expect(matched).toHaveLength(0);
+    });
+
+    it("returns empty when command doesn't match any risk", () => {
+        const ctx = make_ctx();
+        const matched = find_matching_risks(risks, "Bash", { command: "ls -la" }, ctx);
+        expect(matched).toHaveLength(0);
+    });
+
+    it("can match multiple risks for the same command", () => {
+        const ctx = make_ctx();
+        // "rm foo; curl bar" won't match both since we're checking the full
+        // command as-is. But risk-rm matches and risk-network also matches
+        // via the (^|[;&|] *) prefix.
+        const matched = find_matching_risks(risks, "Bash", { command: "rm foo; curl bar" }, ctx);
+        expect(matched).toHaveLength(2);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// curl output with $SAFE
+// ---------------------------------------------------------------------------
+
+describe("curl output $SAFE rule", () => {
+    const curl_safe_rule: TrustRule = {
+        id: "allow-curl-output-safe",
+        tool: "Bash",
+        match: { command: "^curl\\b.*\\s(-o|--output) +$SAFE/" },
+        action: "allow",
+        priority: 82,
+        description: "Allow curl -o to safe dirs",
+    };
+
+    it("allows curl -o to safe directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            curl_safe_rule, "Bash",
+            { command: "curl https://example.com -o /tmp/file.json" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects curl -o to unsafe directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            curl_safe_rule, "Bash",
+            { command: "curl https://example.com -o /etc/file.json" }, ctx,
+        )).toBe(false);
+    });
+
+    it("allows curl --output to project directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            curl_safe_rule, "Bash",
+            { command: "curl https://example.com --output /home/user/project/data.json" }, ctx,
+        )).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Overlay + $SAFE integration
+// ---------------------------------------------------------------------------
+
+describe("overlay + $SAFE integration", () => {
+    it("overlay-added safe directory is recognized by $SAFE rules", () => {
+        const base: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-write-safe",
+                    tool: "Write",
+                    match: { file_path: "^$SAFE/" },
+                    action: "allow",
+                    priority: 70,
+                    description: "Allow writes in safe dirs",
+                },
+            ],
+            known_risks: [],
+            safe_directories: ["/tmp"],
+        };
+
+        const overlay: OverlayFile = {
+            version: 1,
+            name: "extra-dirs",
+            safe_directories: ["/home/user/extra"],
+        };
+
+        const merged = merge_policies_with_overlays(base, [overlay]);
+
+        // Evaluate a write to the overlay-added directory
+        const result = evaluate(
+            merged, [], "Write",
+            { file_path: "/home/user/extra/file.txt" },
+            "/somewhere",
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("overlay-added safe directory does not affect files elsewhere", () => {
+        const base: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-write-safe",
+                    tool: "Write",
+                    match: { file_path: "^$SAFE/" },
+                    action: "allow",
+                    priority: 70,
+                    description: "Allow writes in safe dirs",
+                },
+            ],
+            known_risks: [],
+            safe_directories: ["/tmp"],
+        };
+
+        const overlay: OverlayFile = {
+            version: 1,
+            name: "extra-dirs",
+            safe_directories: ["/home/user/extra"],
+        };
+
+        const merged = merge_policies_with_overlays(base, [overlay]);
+
+        const result = evaluate(
+            merged, [], "Write",
+            { file_path: "/etc/passwd" },
+            "/somewhere",
         );
         expect(result.decision).toBe("deny");
     });
