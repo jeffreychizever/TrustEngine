@@ -446,11 +446,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const session_id = args.session_id as string | undefined;
 
         const policies = await load_merged_policies();
+        const { load_session_grants } = await import("./session_store.js");
         const session_grants = session_id
-            ? await (await import("./session_store.js")).load_session_grants(session_id)
+            ? await load_session_grants(session_id)
             : [];
 
-        const result = (await import("./engine.js")).evaluate(
+        const { evaluate: evaluate_policy } = await import("./engine.js");
+        const result = evaluate_policy(
             policies,
             session_grants,
             tool_name,
@@ -635,6 +637,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
             content: [{ type: "text" as const, text: load_help_text() }],
         };
+    }
+
+    // Defense-in-depth: block grant_permission in async sessions at the MCP
+    // server level too (the hook also blocks this, but the MCP server should
+    // not rely solely on the hook for enforcement)
+    {
+        let gp_session_id = args.session_id as string | undefined;
+        if (!gp_session_id) {
+            gp_session_id = (await read_session_breadcrumb()) ?? undefined;
+        }
+        if (gp_session_id) {
+            const gp_mode = await load_session_mode(gp_session_id);
+            if (is_async_session(gp_session_id) || gp_mode === "async") {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: "Error: grant_permission is not available in async mode. " +
+                            "Use check_permission to see what's already allowed, or " +
+                            "acknowledge_risk for acknowledge-tier risks.",
+                    }],
+                    isError: true,
+                };
+            }
+        }
     }
 
     // Directory management mode

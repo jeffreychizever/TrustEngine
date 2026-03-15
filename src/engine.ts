@@ -99,10 +99,13 @@ export function merge_policies_with_overlays(
     };
 
     for (const overlay of overlays) {
-        // Remove rules by ID
+        // Remove rules by ID (skip protected rules — these are core safety rules
+        // that cannot be disabled via overlays)
         if (overlay.remove_rules && overlay.remove_rules.length > 0) {
             const remove_set = new Set(overlay.remove_rules);
-            merged.rules = merged.rules.filter((r) => !remove_set.has(r.id));
+            merged.rules = merged.rules.filter(
+                (r) => r.protected || !remove_set.has(r.id),
+            );
         }
 
         // Remove risks by ID
@@ -626,6 +629,14 @@ export function split_bash_command(command: string): string[] {
             continue;
         }
 
+        // Single & (background operator) — treat as command separator
+        if (ch === "&") {
+            const trimmed = current.trim();
+            if (trimmed) commands.push(trimmed);
+            current = "";
+            continue;
+        }
+
         if (ch === "|" && i + 1 < command.length && command[i + 1] === "|") {
             const trimmed = current.trim();
             if (trimmed) commands.push(trimmed);
@@ -944,20 +955,22 @@ function evaluate_bash(
         return evaluate_single(all_rules, known_risks, tool_name, tool_input, ctx, recursive_ctx);
     }
 
-    // First: check the FULL unsplit command against deny-only rules.
-    // This catches cross-pipe patterns like "curl ... | bash" that
-    // disappear after splitting on pipe.
-    const deny_rules = all_rules.filter((r) => r.action === "deny");
-    const full_deny = evaluate_single(
-        deny_rules,
+    // First: check the FULL unsplit command against ALL rules (with proper
+    // priority ordering). This catches cross-pipe patterns like "curl ... | bash"
+    // that disappear after splitting on pipe. Using all rules (not just deny)
+    // ensures that a higher-priority allow isn't overridden by a lower-priority deny.
+    // If this returns allow, we still proceed to split evaluation — individual
+    // sub-commands may fail even if the full command matches an allow rule.
+    const full_check = evaluate_single(
+        all_rules,
         known_risks,
         tool_name,
         tool_input,
         ctx,
         recursive_ctx,
     );
-    if (full_deny.decision === "deny" && full_deny.matched_rule) {
-        return full_deny;
+    if (full_check.decision === "deny" && full_check.matched_rule) {
+        return full_check;
     }
 
     const sub_commands = split_bash_command(tool_input.command);
@@ -981,13 +994,6 @@ function evaluate_bash(
     let effective_cwd = ctx.effective_cwd;
 
     for (const sub_cmd of sub_commands) {
-        // Check if this sub-command is a cd — update effective_cwd for
-        // subsequent sub-commands (but not $CWD/$NOTCWD)
-        const cd_target = extract_cd_target(sub_cmd);
-        if (cd_target !== null) {
-            effective_cwd = path_resolve(effective_cwd, cd_target);
-        }
-
         const sub_ctx: EvalContext = {
             ...ctx,
             effective_cwd,
@@ -1005,11 +1011,19 @@ function evaluate_bash(
         if (result.decision === "deny") {
             failures.push({ sub_cmd, result });
             all_risks.push(...result.risk_warnings);
-        } else if (
-            result.matched_rule?.scope === "once" &&
-            result.matched_rule.id
-        ) {
-            once_grants.push(result.matched_rule.id);
+        } else {
+            // Only update effective_cwd after a successful cd evaluation —
+            // denied cd commands should not affect subsequent path resolution
+            const cd_target = extract_cd_target(sub_cmd);
+            if (cd_target !== null) {
+                effective_cwd = path_resolve(effective_cwd, cd_target);
+            }
+            if (
+                result.matched_rule?.scope === "once" &&
+                result.matched_rule.id
+            ) {
+                once_grants.push(result.matched_rule.id);
+            }
         }
     }
 

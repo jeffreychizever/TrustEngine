@@ -2,7 +2,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { load_policies, load_overlays, merge_policies_with_overlays, evaluate } from "./engine.js";
 import type { HookInput } from "./types.js";
 
@@ -76,18 +76,49 @@ async function cmd_evaluate(json_str: string): Promise<void> {
 }
 
 async function cmd_remove(rule_id: string): Promise<void> {
+    // Check base policies first
     const policies = await load_policies(POLICIES_PATH);
-
-    const original_count = policies.rules.length;
+    const base_count = policies.rules.length;
     policies.rules = policies.rules.filter((r) => r.id !== rule_id);
 
-    if (policies.rules.length === original_count) {
-        console.error(`Rule "${rule_id}" not found`);
-        process.exit(1);
+    if (policies.rules.length < base_count) {
+        await writeFile(POLICIES_PATH, JSON.stringify(policies, null, 4), "utf-8");
+        console.log(`Removed rule from base policies: ${rule_id}`);
+        return;
     }
 
-    await writeFile(POLICIES_PATH, JSON.stringify(policies, null, 4), "utf-8");
-    console.log(`Removed rule: ${rule_id}`);
+    // Check overlays (user-grants overlay is the primary target)
+    let entries: string[];
+    try {
+        entries = await readdir(OVERLAYS_DIR);
+    } catch {
+        console.error(`Rule "${rule_id}" not found in base policies or overlays`);
+        process.exit(1);
+        return;
+    }
+
+    for (const file of entries.filter((f) => f.endsWith(".json")).sort()) {
+        const file_path = join(OVERLAYS_DIR, file);
+        try {
+            const raw = await readFile(file_path, "utf-8");
+            const overlay = JSON.parse(raw);
+            if (!overlay.rules || !Array.isArray(overlay.rules)) continue;
+
+            const orig_len = overlay.rules.length;
+            overlay.rules = overlay.rules.filter((r: { id: string }) => r.id !== rule_id);
+
+            if (overlay.rules.length < orig_len) {
+                await writeFile(file_path, JSON.stringify(overlay, null, 4), "utf-8");
+                console.log(`Removed rule from overlay "${file}": ${rule_id}`);
+                return;
+            }
+        } catch {
+            continue;
+        }
+    }
+
+    console.error(`Rule "${rule_id}" not found in base policies or overlays`);
+    process.exit(1);
 }
 
 function print_usage(): void {

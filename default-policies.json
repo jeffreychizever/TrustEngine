@@ -9,17 +9,19 @@
             },
             "action": "deny",
             "priority": 100,
-            "description": "Block dangerous/destructive bash commands"
+            "description": "Block dangerous/destructive bash commands",
+            "protected": true
         },
         {
-            "id": "deny-pipe-to-shell",
+            "id": "deny-pipe-to-interpreter",
             "tool": "Bash",
             "match": {
-                "command": "(curl|wget) +.*\\| *(bash|sh|zsh)"
+                "command": "\\| *(bash|sh|zsh|python3?|perl|ruby|node|xargs)\\b"
             },
             "action": "deny",
             "priority": 100,
-            "description": "Block pipe-to-shell execution patterns"
+            "description": "Block piping to shell interpreters or xargs",
+            "protected": true
         },
         {
             "id": "allow-read-tools",
@@ -44,16 +46,6 @@
             "action": "allow",
             "priority": 70,
             "description": "Allow writes within safe directories"
-        },
-        {
-            "id": "deny-pipe-to-interpreter",
-            "tool": "Bash",
-            "match": {
-                "command": "\\| *(bash|sh|zsh|python3?|perl|ruby|node|xargs)\\b"
-            },
-            "action": "deny",
-            "priority": 100,
-            "description": "Block piping to shell interpreters or xargs"
         },
         {
             "id": "deny-curl-mutating",
@@ -106,6 +98,16 @@
             "description": "Block awk -f (loads script files that can call system())"
         },
         {
+            "id": "deny-awk-system",
+            "tool": "Bash",
+            "match": {
+                "command": "^awk\\b.*\\bsystem\\s*\\("
+            },
+            "action": "deny",
+            "priority": 75,
+            "description": "Block awk with system() calls (arbitrary command execution)"
+        },
+        {
             "id": "deny-sed-dangerous-flags",
             "tool": "Bash",
             "match": {
@@ -116,6 +118,16 @@
             "description": "Block sed -e/-f/-i and s///e (script execution and in-place modification)"
         },
         {
+            "id": "deny-cp-mv-target-flag",
+            "tool": "Bash",
+            "match": {
+                "command": "^(cp|mv)\\b.* -t\\b"
+            },
+            "action": "deny",
+            "priority": 75,
+            "description": "Block cp/mv -t flag (target directory position bypasses $SAFE destination check)"
+        },
+        {
             "id": "deny-write-in-unsafe",
             "tool": "Write|Edit",
             "match": {
@@ -123,7 +135,8 @@
             },
             "action": "deny",
             "priority": 90,
-            "description": "Block writes within unsafe directories"
+            "description": "Block writes within unsafe directories",
+            "protected": true
         },
         {
             "id": "allow-cd",
@@ -179,7 +192,7 @@
             "id": "allow-node-ecosystem",
             "tool": "Bash",
             "match": {
-                "command": "^(npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|npx|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run))\\b"
+                "command": "^(npm +(test|run|ls|list|outdated|audit|info|view|explain|why|pack +--dry-run)|node +(--version|-v)|yarn +(test|run|list|info|why)|pnpm +(test|run|list|ls|why)|bun +(test|run))\\b"
             },
             "action": "allow",
             "priority": 60,
@@ -357,7 +370,7 @@
             "id": "risk-redirect",
             "tool": "Bash",
             "match": {
-                "command": "[^2]>(?!/dev/null)"
+                "command": "(^|[^2])>(?!/dev/null)"
             },
             "risk": "Output redirect may overwrite files — verify the target path",
             "severity": "acknowledge"
@@ -369,6 +382,15 @@
                 "command": "(^|[;&|] *)(npm +(install|ci|i)\\b|make\\b|cmake\\b)"
             },
             "risk": "Build/install commands can execute arbitrary post-install scripts",
+            "severity": "escalate"
+        },
+        {
+            "id": "risk-npx-arbitrary",
+            "tool": "Bash",
+            "match": {
+                "command": "(^|[;&|] *)npx\\b"
+            },
+            "risk": "npx downloads and executes arbitrary packages from npm — verify the package is trusted",
             "severity": "escalate"
         },
         {

@@ -1441,3 +1441,309 @@ describe("$SAFE_CMD combined with $SAFE", () => {
         expect(result.decision).toBe("deny");
     });
 });
+
+// ---------------------------------------------------------------------------
+// Protected rules — overlay cannot remove
+// ---------------------------------------------------------------------------
+
+describe("protected rules", () => {
+    it("overlay cannot remove a protected rule", () => {
+        const base = make_base();
+        base.rules.push({
+            id: "deny-critical",
+            tool: "Bash",
+            match: { command: "^sudo\\b" },
+            action: "deny",
+            priority: 100,
+            description: "Block sudo",
+            protected: true,
+        });
+        const overlay = make_overlay({
+            version: 1,
+            name: "evil",
+            remove_rules: ["deny-critical"],
+        });
+        const merged = merge_policies_with_overlays(base, [overlay]);
+        expect(merged.rules.find((r) => r.id === "deny-critical")).toBeTruthy();
+    });
+
+    it("overlay can remove a non-protected rule", () => {
+        const base = make_base();
+        const overlay = make_overlay({
+            version: 1,
+            name: "relax",
+            remove_rules: ["deny-rm"],
+        });
+        const merged = merge_policies_with_overlays(base, [overlay]);
+        expect(merged.rules.find((r) => r.id === "deny-rm")).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// split_bash_command — background operator &
+// ---------------------------------------------------------------------------
+
+describe("split_bash_command — background operator", () => {
+    it("splits on single & (background)", () => {
+        const cmds = split_bash_command("rm -rf / & echo hello");
+        expect(cmds).toContain("rm -rf /");
+        expect(cmds).toContain("echo hello");
+    });
+
+    it("still splits on && (logical AND)", () => {
+        const cmds = split_bash_command("ls && echo done");
+        expect(cmds).toContain("ls");
+        expect(cmds).toContain("echo done");
+    });
+
+    it("handles & at end of command", () => {
+        const cmds = split_bash_command("sleep 100 &");
+        expect(cmds).toContain("sleep 100");
+    });
+
+    it("background dangerous command is individually denied", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-echo",
+                    tool: "Bash",
+                    match: { command: "^echo\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow echo",
+                },
+            ],
+            known_risks: [],
+        };
+        const result = evaluate(policies, [], "Bash", { command: "echo hi & sleep 100" }, "/tmp");
+        expect(result.decision).toBe("deny");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// cd tracking — only after allowed
+// ---------------------------------------------------------------------------
+
+describe("cd tracking after deny", () => {
+    it("does not update effective_cwd when cd is denied", () => {
+        // Set up policies where cd to /dangerous is denied but cd to /safe is allowed
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "deny-cd-dangerous",
+                    tool: "Bash",
+                    match: { command: "^cd +/dangerous" },
+                    action: "deny",
+                    priority: 90,
+                    description: "Block cd to dangerous",
+                },
+                {
+                    id: "allow-cd",
+                    tool: "Bash",
+                    match: { command: "^cd\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow cd",
+                },
+                {
+                    id: "allow-ls",
+                    tool: "Bash",
+                    match: { command: "^ls\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow ls",
+                },
+            ],
+            known_risks: [],
+        };
+        // cd /dangerous is denied, so subsequent commands should NOT resolve relative to /dangerous
+        const result = evaluate(policies, [], "Bash", { command: "cd /dangerous && ls" }, "/tmp");
+        // The overall command is denied because cd /dangerous is denied
+        expect(result.decision).toBe("deny");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Priority ordering and risk acknowledgment
+// ---------------------------------------------------------------------------
+
+describe("priority ordering", () => {
+    it("higher-priority allow overrides lower-priority deny (non-Bash)", () => {
+        // Use Write tool to test evaluate_single priority ordering directly
+        // (Bash has a deny-only pre-check that short-circuits before sub-command eval)
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "deny-write",
+                    tool: "Write",
+                    action: "deny",
+                    priority: 60,
+                    description: "Deny writes",
+                },
+                {
+                    id: "allow-write",
+                    tool: "Write",
+                    action: "allow",
+                    priority: 80,
+                    description: "Allow writes (override)",
+                },
+            ],
+            known_risks: [],
+        };
+        const result = evaluate(policies, [], "Write", { file_path: "/tmp/test.txt", content: "hi" }, "/tmp");
+        expect(result.decision).toBe("allow");
+    });
+
+    it("same-priority deny beats same-priority allow", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-write",
+                    tool: "Write",
+                    action: "allow",
+                    priority: 70,
+                    description: "Allow writes",
+                },
+                {
+                    id: "deny-write",
+                    tool: "Write",
+                    action: "deny",
+                    priority: 70,
+                    description: "Deny writes",
+                },
+            ],
+            known_risks: [],
+        };
+        const result = evaluate(policies, [], "Write", { file_path: "/tmp/test.txt", content: "hi" }, "/tmp");
+        expect(result.decision).toBe("deny");
+    });
+
+    it("bash sub-command: higher-priority allow overrides lower-priority deny", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [
+                {
+                    id: "deny-echo",
+                    tool: "Bash",
+                    match: { command: "^echo\\b" },
+                    action: "deny",
+                    priority: 60,
+                    description: "Deny echo",
+                },
+                {
+                    id: "allow-echo",
+                    tool: "Bash",
+                    match: { command: "^echo\\b" },
+                    action: "allow",
+                    priority: 80,
+                    description: "Allow echo (override)",
+                },
+            ],
+            known_risks: [],
+        };
+        const result = evaluate(policies, [], "Bash", { command: "echo hello" }, "/tmp");
+        expect(result.decision).toBe("allow");
+    });
+});
+
+describe("risk acknowledgment", () => {
+    function make_risk_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-curl",
+                    tool: "Bash",
+                    match: { command: "^curl\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow curl",
+                },
+            ],
+            known_risks: [
+                {
+                    id: "risk-network",
+                    tool: "Bash",
+                    match: { command: "^curl\\b" },
+                    risk: "Network request",
+                    severity: "escalate",
+                },
+            ],
+        };
+    }
+
+    it("denies allow rule with unacknowledged escalate risk", () => {
+        const result = evaluate(make_risk_policies(), [], "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("deny");
+        expect(result.reason).toContain("unacknowledged");
+    });
+
+    it("allows when risk is acknowledged", () => {
+        const policies = make_risk_policies();
+        policies.rules[0].acknowledged_risks = ["risk-network"];
+        const result = evaluate(policies, [], "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("allow");
+    });
+
+    it("block-tier risk cannot be acknowledged", () => {
+        const policies = make_risk_policies();
+        policies.known_risks[0].severity = "block";
+        policies.rules[0].acknowledged_risks = ["risk-network"];
+        const result = evaluate(policies, [], "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("deny");
+        expect(result.reason).toContain("no override possible");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Session grants through evaluate
+// ---------------------------------------------------------------------------
+
+describe("session grants", () => {
+    it("session grant allows otherwise-denied command", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [],
+            known_risks: [],
+        };
+        const session_grants: TrustRule[] = [
+            {
+                id: "grant-test",
+                tool: "Bash",
+                match: { command: "^curl\\b" },
+                action: "allow",
+                priority: 85,
+                description: "[granted] Allow curl",
+                scope: "session",
+            },
+        ];
+        const result = evaluate(policies, session_grants, "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("allow");
+    });
+
+    it("once-scope grant is tracked in once_grants_consumed", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [],
+            known_risks: [],
+        };
+        const session_grants: TrustRule[] = [
+            {
+                id: "grant-once",
+                tool: "Bash",
+                match: { command: "^curl\\b" },
+                action: "allow",
+                priority: 85,
+                description: "[granted] One-time curl",
+                scope: "once",
+            },
+        ];
+        const result = evaluate(policies, session_grants, "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("allow");
+        expect(result.once_grants_consumed).toContain("grant-once");
+    });
+});

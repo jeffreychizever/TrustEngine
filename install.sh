@@ -107,7 +107,33 @@ if [ "$FORCE" -eq 1 ] && [ -f "$CONFIG_DIR/policies.json" ]; then
 fi
 
 if [ -f "$CONFIG_DIR/policies.json" ]; then
-    echo "  Skipped: $CONFIG_DIR/policies.json already exists (use --force to overwrite)"
+    # Check if installed policies are older than the default
+    INSTALLED_VER=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('$CONFIG_DIR/policies.json','utf-8')).version || 0) } catch { console.log(0) }")
+    DEFAULT_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/default-policies.json','utf-8')).version)")
+
+    if [ "$INSTALLED_VER" -lt "$DEFAULT_VER" ] 2>/dev/null; then
+        echo "  Installed policies are v${INSTALLED_VER}, default is v${DEFAULT_VER}."
+        read -rp "  Upgrade rules to v${DEFAULT_VER}? (preserves your directory settings) [Y/n]: " UPGRADE
+        case "$UPGRADE" in
+            [Nn])
+                echo "  Kept existing v${INSTALLED_VER} policies"
+                ;;
+            *)
+                # Preserve user's directory settings, replace rules and risks
+                EXISTING="$CONFIG_DIR/policies.json" DEFAULT="$SCRIPT_DIR/default-policies.json" node -e "
+const fs = require('fs');
+const existing = JSON.parse(fs.readFileSync(process.env.EXISTING, 'utf-8'));
+const updated = JSON.parse(fs.readFileSync(process.env.DEFAULT, 'utf-8'));
+updated.safe_directories = existing.safe_directories;
+updated.unsafe_directories = existing.unsafe_directories;
+fs.writeFileSync(process.env.EXISTING, JSON.stringify(updated, null, 4));
+console.log('  Upgraded v' + existing.version + ' -> v' + updated.version + ' (preserved directory settings)');
+"
+                ;;
+        esac
+    else
+        echo "  Policies v${INSTALLED_VER} are up to date (use --force to overwrite)"
+    fi
 else
     cp "$SCRIPT_DIR/default-policies.json" "$CONFIG_DIR/policies.json"
     echo "  Copied default policies to $CONFIG_DIR/policies.json"

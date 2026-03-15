@@ -25,6 +25,7 @@ export interface TrustRule {
     description: string;
     scope?: "permanent" | "session" | "once";
     acknowledged_risks?: string[];
+    protected?: boolean;
 }
 
 export interface KnownRisk {

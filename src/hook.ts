@@ -506,7 +506,8 @@ async function run(): Promise<void> {
 
 // Only auto-run when executed directly (not when imported for testing)
 const is_main = process.argv[1]?.endsWith("/hook.js") ||
-    process.argv[1]?.endsWith("/hook.ts");
+    process.argv[1]?.endsWith("/hook.ts") ||
+    process.argv[1]?.endsWith("/trustengine-hook");
 if (is_main) {
     run();
 }
