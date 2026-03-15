@@ -2,7 +2,7 @@
 
 Policy-driven trust enforcement for agentic AI tools.
 
-Current state-of-the-art agentic tools require a handcrafted permission policy that's loaded at session startup. TrustEngine evaluates just-in-time, and allows the agent to request new permissions, removing some of the cognitive load of trust policy management and mitigating prompt fatigue. 
+Current state-of-the-art agentic tools require a handcrafted permission policy that's loaded at session startup. TrustEngine evaluates just-in-time, and allows the agent to request new permissions, removing some of the cognitive load of trust policy management and mitigating prompt fatigue.
 
 By moving permissions into the agent context, the agent can make behavioral adjustments based on its permissions, e.g. requesting permissions up front for a project so it can operate uninterrupted, spinning up sub-agents without them prompting for input, or modifying its own permissions as reasonable in a persistent and low-touch way. Policy overlays are supported, meaning organizations can define central policies and team specific overlays, or individual MCPs can define tool-specific overlays. Risks can be defined, prompting the agent to consider them explicitly before running tools.
 
@@ -84,9 +84,9 @@ The installer also asks how to classify directories for Write/Edit operations:
 
 Restart Claude Code after installation.
 
-### Demo
+### Quick Demo
 
-Try this prompt in a Claude Code session to exercise TrustEngine's features:
+Try this prompt to see TrustEngine in action:
 
 ```
 I need you to do the following:
@@ -101,67 +101,27 @@ I need you to do the following:
 
 What you should see:
 
-| Step | Tool | TrustEngine Decision | Why |
-|------|------|---------------------|-----|
+| Step | Tool | Expected Decision | Why |
+|------|------|-------------------|-----|
 | 1 | `Bash: mkdir -p` | Auto-allowed | `mkdir` is a safe command |
-| 2 | `Write` to `/tmp/...` | Auto-allowed or grant needed | Depends on whether `/tmp` is in `$SAFE` |
-| 3 | `Bash: node src/hello.js` | Auto-allowed | `node` is a safe command |
-| 4 | `Bash: curl` | **Denied** with risk warning | Network request risk |
-| 5 | `Write` or `cp` | May need grant | Depends on approach |
+| 2 | `Write` to `/tmp/...` | Auto-allowed | `/tmp` is in `$SAFE` by default |
+| 3 | `Bash: node src/hello.js` | Auto-allowed | Read-only execution |
+| 4 | `Bash: curl` | **Denied** → grant needed | Network request is escalate-tier |
+| 5 | `Write` or `cp` | Auto-allowed | Target is in `$SAFE` |
 | 6 | `Bash: git init/add/commit` | Auto-allowed | Safe git commands |
-| 7 | `Bash: rm -r` | **Denied** with risk warning | File deletion risk |
+| 7 | `Bash: rm -r` | **Denied** → grant needed | File deletion is escalate-tier |
 
-You should be prompted to approve 3-4 `grant_permission` requests. The agent should:
-- Call `grant_permission(help=true)` on first denial to learn the system
-- Use **structured matchers** (`command_names` + `path_prefix`) instead of raw regex
-- Choose **session** scope (not one-off) for operations it may repeat
-- Scope destructive commands to `/tmp/trustengine-demo/`
+You should be prompted to approve 2-3 `grant_permission` requests. The agent should use structured matchers, session scope, and scoped paths.
 
-Sample output:
-```
-● trustengine - grant_permission (MCP)(tool: "Bash", match: {"command":"^git (init|add|commit)"}, scope: "session", session_id: "a8794eac-df4e-467d-9ea9-64591776715c",
-                                      description: "Allow git init, add, and commit commands", justification: "User requested git init, add, and commit in
-                                      /tmp/trustengine-demo. These are local-only git operations (no push/remote) in an isolated temp directory.")
-  ⎿  Permission granted (session):
-       Rule ID: grant-842d6345
-       Tool: Bash
-     … +6 lines (ctrl+o to expand)
+### Full Validation Suite
 
-● trustengine - grant_permission (MCP)(tool: "Bash", match: {"command":"^cd /tmp/"}, scope: "session", session_id: "a8794eac-df4e-467d-9ea9-64591776715c", description:
-                                      "Allow cd into /tmp/ subdirectories", justification: "Need to cd into /tmp/trustengine-demo before running git commands. Scoped to
-                                      /tmp/ only.")
-  ⎿  Permission granted (session):
-       Rule ID: grant-cac06f43
-       Tool: Bash
-     … +5 lines (ctrl+o to expand)
+For comprehensive post-install validation (32 test cases covering bypass attempts, self-protection, risk tiers, and edge cases), see **[VALIDATION.md](VALIDATION.md)**. It tests:
 
-● Now let me retry the git operations.
-
-● Bash(cd /tmp/trustengine-demo && git init && git add -A && git commit -m "Initial commit: hello.js and API response")
-  ⎿  hint: Using 'master' as the name for the initial branch. This default branch name
-     hint: is subject to change. To configure the initial branch name to use in all
-     hint: of your new repositories, which will suppress this warning, call:
-     … +12 lines (ctrl+o to expand)
-  ⎿  Shell cwd was reset to /home/jeffreychizever/workspace
-
-● Git repo initialized and committed. Now for the final cleanup.
-
-● Bash(rm -rf /tmp/trustengine-demo)
-  ⎿  Done
-
-● All 7 steps completed:
-
-  1. Created directory structure — /tmp/trustengine-demo/ with src/ and build/
-  2. Wrote src/hello.js — logs "Hello from TrustEngine demo"
-  3. Ran with node — output verified: Hello from TrustEngine demo
-  4. Fetched httpbin.org/json — got sample slideshow JSON via curl
-  5. Saved to build/api-response.json — 21-line JSON response
-  6. Git init + commit — committed both files on master (930dd74)
-  7. Cleaned up — removed /tmp/trustengine-demo entirely
-
-  Along the way, TrustEngine required session-scoped grants for curl (network access), git (init/add/commit), cd (into /tmp), and rm -rf (destructive cleanup) — all
-  properly scoped to the demo directory and task.
-```
+- Basic allow/deny, pipe-to-shell, curl flag combinations
+- Newline injection, brace groups, heredocs, process substitutions
+- cd tracking with flags and variable expansion
+- Self-protection for policies, sessions, overlays, and scripts
+- Redirect risks, dangerous awk/sed, and the permission system
 
 ## Default Policies
 
