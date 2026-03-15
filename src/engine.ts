@@ -764,6 +764,35 @@ function extract_backtick_commands(command: string): string[] {
     return results;
 }
 
+/**
+ * Walk forward from `start` tracking quote-aware parenthesis depth.
+ * Returns the index one past the matching close paren (i.e. `j` after
+ * depth reaches 0), or `command.length` if unmatched.
+ */
+function find_matching_close_paren(command: string, start: number): number {
+    let depth = 1;
+    let j = start;
+    let in_single = false;
+    let in_double = false;
+    while (j < command.length && depth > 0) {
+        const ic = command[j];
+        if (ic === "\\" && in_double && j + 1 < command.length) {
+            j += 2; // skip escaped char inside double quotes
+            continue;
+        }
+        if (ic === "'" && !in_double) {
+            in_single = !in_single;
+        } else if (ic === '"' && !in_single) {
+            in_double = !in_double;
+        } else if (!in_single && !in_double) {
+            if (ic === "(") depth++;
+            else if (ic === ")") depth--;
+        }
+        j++;
+    }
+    return j;
+}
+
 function extract_subshell_commands(command: string): string[] {
     const results: string[] = [];
     let in_single_quote = false;
@@ -800,28 +829,9 @@ function extract_subshell_commands(command: string): string[] {
 
         // Only extract $() outside of single quotes
         if (ch === "$" && !in_single_quote && i + 1 < command.length && command[i + 1] === "(") {
-            let depth = 1;
-            let start = i + 2;
-            let j = start;
-            let inner_in_single = false;
-            let inner_in_double = false;
-            while (j < command.length && depth > 0) {
-                const ic = command[j];
-                if (ic === "\\" && inner_in_double && j + 1 < command.length) {
-                    j += 2; // skip escaped char inside double quotes
-                    continue;
-                }
-                if (ic === "'" && !inner_in_double) {
-                    inner_in_single = !inner_in_single;
-                } else if (ic === '"' && !inner_in_single) {
-                    inner_in_double = !inner_in_double;
-                } else if (!inner_in_single && !inner_in_double) {
-                    if (ic === "(") depth++;
-                    else if (ic === ")") depth--;
-                }
-                j++;
-            }
-            if (depth === 0) {
+            const start = i + 2;
+            const j = find_matching_close_paren(command, start);
+            if (j <= command.length && command[j - 1] === ")") {
                 const inner = command.slice(start, j - 1).trim();
                 if (inner) {
                     const inner_cmds = split_bash_command(inner);
@@ -889,28 +899,9 @@ function extract_process_substitution_commands(command: string): string[] {
                 continue;
             }
 
-            let depth = 1;
-            let start = i + 2;
-            let j = start;
-            let inner_in_single = false;
-            let inner_in_double = false;
-            while (j < command.length && depth > 0) {
-                const ic = command[j];
-                if (ic === "\\" && inner_in_double && j + 1 < command.length) {
-                    j += 2; // skip escaped char inside double quotes
-                    continue;
-                }
-                if (ic === "'" && !inner_in_double) {
-                    inner_in_single = !inner_in_single;
-                } else if (ic === '"' && !inner_in_single) {
-                    inner_in_double = !inner_in_double;
-                } else if (!inner_in_single && !inner_in_double) {
-                    if (ic === "(") depth++;
-                    else if (ic === ")") depth--;
-                }
-                j++;
-            }
-            if (depth === 0) {
+            const start = i + 2;
+            const j = find_matching_close_paren(command, start);
+            if (j <= command.length && command[j - 1] === ")") {
                 const inner = command.slice(start, j - 1).trim();
                 if (inner) {
                     const inner_cmds = split_bash_command(inner);
@@ -1038,6 +1029,7 @@ function evaluate_single(
  * Parse a cd sub-command and return the target directory, or null if
  * the target cannot be determined (e.g. `cd -`).
  */
+const CD_FLAG_RE = /^-[PLe@]+$/;
 function extract_cd_target(sub_cmd: string): string | null {
     if (sub_cmd === "cd") return homedir();
 
@@ -1057,7 +1049,7 @@ function extract_cd_target(sub_cmd: string): string | null {
                 continue;
             }
             // Skip cd flags: -P, -L, -e, -@ and combinations like -PL
-            if (/^-[PLe@]+$/.test(tok)) {
+            if (CD_FLAG_RE.test(tok)) {
                 continue;
             }
         }
