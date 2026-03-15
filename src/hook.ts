@@ -358,12 +358,20 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
         }
     }
 
+    // Resolve symlinks in file_path before self-protection and evaluation
+    const resolved_input = { ...tool_input } as Record<string, unknown>;
+    if (typeof resolved_input.file_path === "string") {
+        resolved_input.file_path = await resolve_file_path(
+            resolved_input.file_path as string,
+        );
+    }
+
     // Self-protection: hard-deny writes to protected directories
     if (
         (tool_name === "Write" || tool_name === "Edit") &&
-        typeof tool_input.file_path === "string"
+        typeof resolved_input.file_path === "string"
     ) {
-        const target = tool_input.file_path as string;
+        const target = resolved_input.file_path as string;
         if (target === POLICIES_PATH || target.endsWith("/trustengine/policies.json")) {
             return make_deny_output(
                 "TrustEngine: policies.json is protected. Use grant_permission(scope='permanent') to modify policies.",
@@ -399,14 +407,6 @@ export async function handle_hook_input(input: HookInput): Promise<HookOutput> {
                 );
             }
         }
-    }
-
-    // Resolve symlinks in file_path before evaluation
-    const resolved_input = { ...tool_input } as Record<string, unknown>;
-    if (typeof resolved_input.file_path === "string") {
-        resolved_input.file_path = await resolve_file_path(
-            resolved_input.file_path as string,
-        );
     }
 
     const session_grants = session_id

@@ -253,7 +253,8 @@
             },
             "action": "allow",
             "priority": 60,
-            "description": "Allow cp/mv targeting safe directories"
+            "description": "Allow cp/mv targeting safe directories",
+            "acknowledged_risks": ["risk-file-overwrite"]
         },
         {
             "id": "allow-safe-redirect",

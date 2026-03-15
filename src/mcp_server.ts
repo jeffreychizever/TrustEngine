@@ -14,6 +14,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { PoliciesFile, OverlayFile, TrustRule, KnownRisk } from "./types.js";
 import {
+    load_overlays,
+    merge_policies_with_overlays,
+} from "./engine.js";
+import {
     add_session_grant,
     read_session_breadcrumb,
     is_async_session,
@@ -177,7 +181,6 @@ async function save_user_grants(overlay: OverlayFile): Promise<void> {
 
 async function load_merged_policies(): Promise<PoliciesFile> {
     const base = await load_or_create_policies();
-    const { load_overlays, merge_policies_with_overlays } = await import("./engine.js");
     const overlays = await load_overlays(OVERLAYS_DIR);
     return merge_policies_with_overlays(base, overlays);
 }
@@ -670,15 +673,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
         }
 
-        const policies = await load_or_create_policies();
-        policies.safe_directories ??= [];
-        policies.unsafe_directories ??= [];
+        const overlay = await load_user_grants();
+        overlay.safe_directories ??= [];
+        overlay.unsafe_directories ??= [];
 
         const changes: string[] = [];
 
         if (add_safe) {
-            if (!policies.safe_directories.includes(add_safe)) {
-                policies.safe_directories.push(add_safe);
+            if (!overlay.safe_directories.includes(add_safe)) {
+                overlay.safe_directories.push(add_safe);
                 changes.push(`Added "${add_safe}" to safe directories`);
             } else {
                 changes.push(`"${add_safe}" is already in safe directories`);
@@ -686,8 +689,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (add_unsafe) {
-            if (!policies.unsafe_directories.includes(add_unsafe)) {
-                policies.unsafe_directories.push(add_unsafe);
+            if (!overlay.unsafe_directories.includes(add_unsafe)) {
+                overlay.unsafe_directories.push(add_unsafe);
                 changes.push(`Added "${add_unsafe}" to unsafe directories`);
             } else {
                 changes.push(`"${add_unsafe}" is already in unsafe directories`);
@@ -695,9 +698,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (remove_safe) {
-            const idx = policies.safe_directories.indexOf(remove_safe);
+            const idx = overlay.safe_directories.indexOf(remove_safe);
             if (idx !== -1) {
-                policies.safe_directories.splice(idx, 1);
+                overlay.safe_directories.splice(idx, 1);
                 changes.push(`Removed "${remove_safe}" from safe directories`);
             } else {
                 changes.push(`"${remove_safe}" was not in safe directories`);
@@ -705,9 +708,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (remove_unsafe) {
-            const idx = policies.unsafe_directories.indexOf(remove_unsafe);
+            const idx = overlay.unsafe_directories.indexOf(remove_unsafe);
             if (idx !== -1) {
-                policies.unsafe_directories.splice(idx, 1);
+                overlay.unsafe_directories.splice(idx, 1);
                 changes.push(`Removed "${remove_unsafe}" from unsafe directories`);
             } else {
                 changes.push(`"${remove_unsafe}" was not in unsafe directories`);
@@ -715,10 +718,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Clean up empty arrays
-        if (policies.safe_directories.length === 0) delete policies.safe_directories;
-        if (policies.unsafe_directories.length === 0) delete policies.unsafe_directories;
+        if (overlay.safe_directories.length === 0) delete overlay.safe_directories;
+        if (overlay.unsafe_directories.length === 0) delete overlay.unsafe_directories;
 
-        await save_policies(policies);
+        await save_user_grants(overlay);
 
         return {
             content: [{

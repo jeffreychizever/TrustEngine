@@ -170,7 +170,7 @@ Sample output:
 - Agent orchestration tools (Agent, TaskCreate, etc.)
 - Write/Edit within safe directories (`$SAFE` — configurable, defaults to `/tmp` and `$CWD`)
 - Safe bash commands (ls, git status, npm test, node, etc.)
-- npm install, local git mutations (add, commit, checkout)
+- Local git mutations (add, commit, checkout, merge, cherry-pick). Note: `npm install` is under known risks
 
 ### Auto-Denied
 - Destructive bash (`rm -rf /`, `sudo`, `mkfs`, fork bombs)
@@ -275,7 +275,7 @@ Policies live at `~/.config/trustengine/policies.json`:
             "tool": "Bash",
             "match": { "command": "git\\s+push" },
             "risk": "Modifies shared remote state",
-            "severity": "medium"
+            "severity": "escalate"
         }
     ]
 }
@@ -286,9 +286,9 @@ Policies live at `~/.config/trustengine/policies.json`:
 - **tool**: Regex matching tool name
 - **match**: Optional dict of parameter regex patterns (`$CWD`, `$SAFE`, `$UNSAFE`, `$NOTCWD` are substituted)
 - **action**: `allow` or `deny`
-- **priority**: Higher = evaluated first. Deny wins at equal priority. Grants get priority 95.
+- **priority**: Higher = evaluated first. Deny wins at equal priority. Grants get priority 85.
 - **description**: Human-readable explanation
-- **risks_acknowledged**: `true` on human-approved grants to bypass known risk veto
+- **acknowledged_risks**: Array of risk IDs acknowledged by this rule (e.g., `["risk-network", "risk-redirect"]`)
 
 ## Bash Command Decomposition
 
