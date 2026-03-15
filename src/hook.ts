@@ -280,16 +280,39 @@ async function run(): Promise<void> {
                 }
             }
 
+            // Warn about .* in raw match patterns — it can break backslash-escape
+            // handling in $SAFE/$UNSAFE and may be overly broad. The structured
+            // fields (command_names/path_prefix) compile to safer, scoped patterns.
+            const warnings: string[] = [];
+            if (match_raw) {
+                for (const [param, pattern] of Object.entries(match_raw)) {
+                    if (/\.\*/.test(pattern)) {
+                        warnings.push(
+                            `Pattern for '${param}' contains '.*' which may be overly broad ` +
+                            `and can interfere with backslash-escaped paths. ` +
+                            `Consider using structured fields (command_names, path_prefix) instead.`,
+                        );
+                    }
+                }
+            }
+
             if (errors.length > 0) {
+                const msg = errors.map((e) => `  - ${e}`).join("\n");
+                const warn_msg = warnings.length > 0
+                    ? `\nWarnings:\n${warnings.map((w) => `  - ${w}`).join("\n")}`
+                    : "";
                 const output = make_deny_output(
-                    `TrustEngine: invalid grant_permission request:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+                    `TrustEngine: invalid grant_permission request:\n${msg}${warn_msg}`,
                 );
                 process.stdout.write(JSON.stringify(output));
                 return;
             }
 
-            // Valid request — ask the human
+            // Valid request — ask the human (include warnings if any)
             const ack_risks = tool_input.acknowledged_risks as string[] | undefined;
+            const warn_suffix = warnings.length > 0
+                ? `\nWarnings:\n${warnings.map((w) => `  ⚠ ${w}`).join("\n")}`
+                : "";
             const output: HookOutput = {
                 hookSpecificOutput: {
                     hookEventName: "PreToolUse",
@@ -300,7 +323,8 @@ async function run(): Promise<void> {
                         (justification ? `\nJustification: ${justification}` : "") +
                         (ack_risks && ack_risks.length > 0
                             ? `\nAcknowledged risks: ${ack_risks.join(", ")}`
-                            : ""),
+                            : "") +
+                        warn_suffix,
                 },
             };
             process.stdout.write(JSON.stringify(output));

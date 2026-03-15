@@ -509,6 +509,19 @@ describe("substitute_variables capture groups", () => {
         // $SAFETY should remain untouched since \b prevents matching
         expect(result).toContain("$SAFETY");
     });
+
+    it("inserts negative lookbehind when $SAFE is preceded by space", () => {
+        // " $SAFE/" should become "(?<!\\) (?<__safe_0__>...)" so that
+        // .* can't match across backslash-escaped spaces.
+        const result = substitute_variables("^cmd\\b.* $SAFE/", "/home/user");
+        expect(result).toContain("(?<!\\\\)");
+    });
+
+    it("does not insert lookbehind when $SAFE is at start of pattern", () => {
+        // "^$SAFE/" has no space before $SAFE — no lookbehind needed
+        const result = substitute_variables("^$SAFE/", "/home/user");
+        expect(result).not.toContain("(?<!\\\\)");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -684,6 +697,35 @@ describe("matches_rule with bash $SAFE commands", () => {
         )).toBe(true);
     });
 
+    it("handles backslash-escaped spaces in path", () => {
+        // The engine replaces " $SAFE" with a negative lookbehind (?<!\\)
+        // so that .* skips over escaped spaces when finding the argument
+        // boundary. The capture group then gets the full escaped path.
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo /tmp/my\\ file.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects backslash-escaped path to unsafe dir", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo /etc/my\\ file.txt" }, ctx,
+        )).toBe(false);
+    });
+
+    it("handles escaped spaces in source without affecting dest capture", () => {
+        // Source file has escaped space, dest is plain — the lookbehind
+        // correctly picks the unescaped space before the dest path.
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp my\\ source.txt /tmp/dest.txt" }, ctx,
+        )).toBe(true);
+    });
+
     it("handles ~ expansion to home directory", () => {
         const home = require("os").homedir();
         const ctx = make_ctx({
@@ -721,9 +763,6 @@ describe("path quoting and escaping", () => {
     };
 
     it("handles file_path with backslash-escaped spaces", () => {
-        // For file_path patterns (no .* prefix), the capture group matches
-        // the full path including escaped spaces, and resolve_match_path
-        // strips the backslash escapes.
         const ctx = make_ctx();
         expect(matches_rule(
             write_safe_rule, "Write",
@@ -738,16 +777,6 @@ describe("path quoting and escaping", () => {
             { file_path: "/etc/my\\ file.txt" }, ctx,
         )).toBe(false);
     });
-
-    // NOTE: Backslash-escaped spaces in bash command patterns with .*
-    // (e.g. "^cp\b.* $SAFE/") do NOT work reliably. The .* is greedy
-    // and consumes the backslash, then the literal space in the pattern
-    // matches the escaped space. The capture group only gets the part
-    // after the space. This is a known limitation — fixing it requires
-    // bash-aware argument parsing rather than regex matching.
-    //
-    // Quoted paths (double/single quotes) DO work because they contain
-    // no unescaped spaces for .* to match.
 });
 
 // ---------------------------------------------------------------------------

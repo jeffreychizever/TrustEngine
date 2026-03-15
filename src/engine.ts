@@ -250,7 +250,19 @@ function validate_path_captures(
  * - $UNSAFE/ → named capture group, trailing / consumed
  *
  * The capture group matches non-whitespace characters plus backslash-escaped
- * spaces (e.g. my\ file.txt), so paths with escaped spaces are captured whole.
+ * characters (e.g. my\ file.txt), so paths with escaped spaces are captured whole.
+ *
+ * When $SAFE or $UNSAFE is preceded by a literal space in the pattern
+ * (the common case: "^cmd\b.* $SAFE/"), that space is replaced with a
+ * negative lookbehind (?<!\\) so that the regex engine skips over
+ * backslash-escaped spaces when searching for the argument boundary.
+ * Without this, `.*` greedily consumes the backslash and the regex treats
+ * the escaped space as a regular argument separator.
+ *
+ * Example: rule "^cp\b.* $SAFE/" against "cp foo /tmp/my\ file.txt"
+ *   - .* backtracks, tries space after "\" → lookbehind sees \, rejects
+ *   - tries space after "foo" → lookbehind sees "o", accepts
+ *   - capture group gets "/tmp/my\ file.txt" (the full escaped path)
  *
  * $SAFE and $UNSAFE captures are validated post-match via validate_path_captures.
  */
@@ -263,19 +275,36 @@ export function substitute_variables(
     let result = pattern.replace(/\$NOTCWD/g, `(?!${escaped_cwd}/)`);
     result = result.replace(/\$CWD/g, escaped_cwd);
 
-    // Replace $SAFE and $UNSAFE with named capture groups.
-    // \b prevents matching inside other macro names.
-    // \/? consumes an optional trailing / (the directory separator in patterns).
-    // The capture pattern matches non-whitespace OR backslash-escaped characters
-    // (e.g. backslash-space in "my\ file.txt"), so escaped-space paths work.
-    let safe_idx = 0;
-    let unsafe_idx = 0;
+    // The capture group for $SAFE/$UNSAFE: matches non-whitespace characters
+    // OR a backslash followed by any character (handling escaped spaces, etc).
+    // This means "my\ file.txt" is captured as a single token.
     const path_capture = "(?:[^\\s]|\\\\.)+";
 
+    // When $SAFE/$UNSAFE appears after a space in the pattern (e.g. ".* $SAFE/"),
+    // we replace that space with a negative lookbehind: (?<!\\) ensures the
+    // regex only matches spaces NOT preceded by a backslash. This prevents
+    // the greedy .* from splitting on escaped spaces inside a path.
+    //
+    // \b prevents matching inside other macro names (e.g. $SAFETY).
+    // \/? consumes an optional trailing / (the directory separator in patterns).
+    let safe_idx = 0;
+    let unsafe_idx = 0;
 
+    // First pass: " $SAFE/" or " $SAFE" (space-prefixed) → lookbehind + capture
+    result = result.replace(
+        / \$SAFE\b\/?/g,
+        () => `(?<!\\\\) (?<__safe_${safe_idx++}__>${path_capture})`,
+    );
+    // Second pass: remaining $SAFE (not space-prefixed, e.g. "^$SAFE/") → just capture
     result = result.replace(
         /\$SAFE\b\/?/g,
         () => `(?<__safe_${safe_idx++}__>${path_capture})`,
+    );
+
+    // Same two-pass approach for $UNSAFE
+    result = result.replace(
+        / \$UNSAFE\b\/?/g,
+        () => `(?<!\\\\) (?<__unsafe_${unsafe_idx++}__>${path_capture})`,
     );
     result = result.replace(
         /\$UNSAFE\b\/?/g,
