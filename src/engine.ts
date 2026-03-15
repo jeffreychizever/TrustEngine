@@ -813,13 +813,19 @@ function evaluate_single(
     ctx: EvalContext,
     recursive_ctx?: RecursiveEvalContext,
 ): EvaluationResult {
-    // Sort: highest priority first, deny before allow at same priority
-    const sorted = [...all_rules].sort((a, b) => {
-        if (b.priority !== a.priority) return b.priority - a.priority;
-        if (a.action === "deny" && b.action === "allow") return -1;
-        if (a.action === "allow" && b.action === "deny") return 1;
-        return 0;
+    // Sort: highest priority first, deny before allow at same priority,
+    // later rules (higher index) before earlier rules at same priority+action.
+    // The last tiebreaker ensures newer session grants override older ones
+    // when both match at the same priority — e.g., a grant_permission that
+    // acknowledges more risks should win over an earlier acknowledge_risk.
+    const indexed = all_rules.map((rule, idx) => ({ rule, idx }));
+    indexed.sort((a, b) => {
+        if (b.rule.priority !== a.rule.priority) return b.rule.priority - a.rule.priority;
+        if (a.rule.action === "deny" && b.rule.action === "allow") return -1;
+        if (a.rule.action === "allow" && b.rule.action === "deny") return 1;
+        return b.idx - a.idx; // newer (higher index) wins
     });
+    const sorted = indexed.map((x) => x.rule);
 
     // Build recursive context for $SAFE_CMD if not already provided.
     // This is constructed at the evaluate_single level (not evaluate_bash)

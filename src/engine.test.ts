@@ -1721,4 +1721,86 @@ describe("session grants", () => {
         expect(result.decision).toBe("allow");
         expect(result.once_grants_consumed).toContain("grant-once");
     });
+
+    it("newer grant at same priority wins over older grant", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [],
+            known_risks: [
+                {
+                    id: "risk-network",
+                    tool: "Bash",
+                    match: { command: "^curl\\b" },
+                    risk: "Network request",
+                    severity: "escalate",
+                },
+                {
+                    id: "risk-redirect",
+                    tool: "Bash",
+                    match: { command: "[^2]>(?!/dev/null)" },
+                    risk: "Output redirect",
+                    severity: "acknowledge",
+                },
+            ],
+        };
+        // First grant: only acknowledges risk-redirect
+        // Second grant: acknowledges both risks
+        const session_grants: TrustRule[] = [
+            {
+                id: "ack-old",
+                tool: "Bash",
+                match: { command: "^curl\\b" },
+                action: "allow",
+                priority: 85,
+                description: "[acknowledged] risk-redirect only",
+                scope: "session",
+                acknowledged_risks: ["risk-redirect"],
+            },
+            {
+                id: "grant-new",
+                tool: "Bash",
+                match: { command: "^curl\\b" },
+                action: "allow",
+                priority: 85,
+                description: "[granted] both risks",
+                scope: "session",
+                acknowledged_risks: ["risk-network", "risk-redirect"],
+            },
+        ];
+        const result = evaluate(policies, session_grants, "Bash", { command: "curl https://example.com" }, "/tmp");
+        // The newer grant (grant-new) should win and acknowledge both risks.
+        // Without the "newer wins" tiebreaker, ack-old would match first and
+        // the unacknowledged risk-network would cause a deny.
+        expect(result.decision).toBe("allow");
+    });
+
+    it("older grant with fewer acks would deny if it matched first", () => {
+        const policies: PoliciesFile = {
+            version: 2,
+            rules: [],
+            known_risks: [
+                {
+                    id: "risk-network",
+                    tool: "Bash",
+                    match: { command: "^curl\\b" },
+                    risk: "Network request",
+                    severity: "escalate",
+                },
+            ],
+        };
+        // Only one grant that does NOT acknowledge the risk
+        const session_grants: TrustRule[] = [
+            {
+                id: "ack-incomplete",
+                tool: "Bash",
+                match: { command: "^curl\\b" },
+                action: "allow",
+                priority: 85,
+                description: "[acknowledged] no risks",
+                scope: "session",
+            },
+        ];
+        const result = evaluate(policies, session_grants, "Bash", { command: "curl https://example.com" }, "/tmp");
+        expect(result.decision).toBe("deny");
+    });
 });
