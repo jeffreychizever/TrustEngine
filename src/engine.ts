@@ -1,5 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { join, resolve as path_resolve } from "node:path";
+import { homedir } from "node:os";
 import type {
     PoliciesFile,
     OverlayFile,
@@ -7,6 +9,27 @@ import type {
     KnownRisk,
     EvaluationResult,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Types for resolved directory state and evaluation context
+// ---------------------------------------------------------------------------
+
+export interface ResolvedDirs {
+    dirs: string[];       // canonical directory paths (realpath'd where possible)
+    has_notcwd: boolean;  // true if $NOTCWD was in the original list
+}
+
+export interface EvalContext {
+    cwd: string;           // original CWD — used for $CWD/$NOTCWD substitution (never changes)
+    effective_cwd: string; // may differ after cd in a command chain — used for $SAFE/$UNSAFE path resolution
+    resolved_cwd: string;  // realpath'd cwd
+    safe: ResolvedDirs;
+    unsafe: ResolvedDirs;
+}
+
+// ---------------------------------------------------------------------------
+// Policy / overlay loading (unchanged)
+// ---------------------------------------------------------------------------
 
 export async function load_policies(path: string): Promise<PoliciesFile> {
     const raw = await readFile(path, "utf-8");
@@ -104,72 +127,192 @@ export function merge_policies_with_overlays(
     return merged;
 }
 
+// ---------------------------------------------------------------------------
+// Directory and path resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a list of directory entries (from safe_directories / unsafe_directories)
+ * into canonical filesystem paths. Expands $CWD, follows symlinks via realpath.
+ * $NOTCWD is tracked as a flag rather than a concrete path.
+ */
+export function resolve_directories(dirs: string[], cwd: string): ResolvedDirs {
+    const resolved: string[] = [];
+    let has_notcwd = false;
+
+    for (const dir of dirs) {
+        if (dir === "$NOTCWD") {
+            has_notcwd = true;
+            continue;
+        }
+
+        let d = dir.replace(/\$CWD/g, cwd);
+
+        // Skip entries with unresolved macros
+        if (d.includes("$")) continue;
+
+        try {
+            resolved.push(realpathSync(d));
+        } catch {
+            // Directory may not exist — normalize without symlink resolution
+            resolved.push(path_resolve(d));
+        }
+    }
+
+    return { dirs: [...new Set(resolved)], has_notcwd };
+}
+
+/**
+ * Resolve a single path captured from a $SAFE/$UNSAFE match group.
+ * Handles ~, relative paths (resolved against effective_cwd), and symlinks.
+ */
+function resolve_match_path(captured: string, effective_cwd: string): string {
+    let p = captured;
+
+    // Strip surrounding quotes
+    if (
+        (p.startsWith('"') && p.endsWith('"')) ||
+        (p.startsWith("'") && p.endsWith("'"))
+    ) {
+        p = p.slice(1, -1);
+    }
+
+    // Expand ~
+    if (p === "~") return homedir();
+    if (p.startsWith("~/")) {
+        p = join(homedir(), p.slice(2));
+    }
+
+    // Make absolute (also normalizes ..)
+    const abs = path_resolve(effective_cwd, p);
+
+    // Try realpath to follow symlinks
+    try {
+        return realpathSync(abs);
+    } catch {
+        return abs;
+    }
+}
+
+/**
+ * After a regex match, validate any $SAFE/$UNSAFE capture groups.
+ * Returns true if all captured paths pass their respective directory checks.
+ * Returns true trivially when no capture groups are present.
+ */
+function validate_path_captures(
+    match: RegExpExecArray,
+    ctx: EvalContext,
+): boolean {
+    if (!match.groups) return true;
+
+    for (const [name, value] of Object.entries(match.groups)) {
+        if (value === undefined) continue;
+
+        const resolved = resolve_match_path(value, ctx.effective_cwd);
+
+        if (name.startsWith("__safe_")) {
+            // Path must be under a safe directory
+            const under_safe = ctx.safe.dirs.some(
+                (d) => resolved === d || resolved.startsWith(d + "/"),
+            );
+            if (!under_safe) return false;
+        }
+
+        if (name.startsWith("__unsafe_")) {
+            // Path must be under an unsafe directory (or outside CWD if has_notcwd)
+            let is_unsafe = ctx.unsafe.dirs.some(
+                (d) => resolved === d || resolved.startsWith(d + "/"),
+            );
+            if (!is_unsafe && ctx.unsafe.has_notcwd) {
+                is_unsafe =
+                    resolved !== ctx.resolved_cwd &&
+                    !resolved.startsWith(ctx.resolved_cwd + "/");
+            }
+            if (!is_unsafe) return false;
+        }
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern substitution
+// ---------------------------------------------------------------------------
+
+/**
+ * Substitute policy macros in a regex pattern:
+ * - $CWD → escaped literal cwd (regex macro, never changes with cd)
+ * - $NOTCWD → negative lookahead for cwd (regex macro, never changes with cd)
+ * - $SAFE/ → named capture group (\S+), trailing / consumed
+ * - $UNSAFE/ → named capture group (\S+), trailing / consumed
+ *
+ * $SAFE and $UNSAFE captures are validated post-match via validate_path_captures.
+ */
 export function substitute_variables(
     pattern: string,
     cwd: string,
-    safe_dirs?: string[],
-    unsafe_dirs?: string[],
 ): string {
     const escaped_cwd = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
     let result = pattern.replace(/\$NOTCWD/g, `(?!${escaped_cwd}/)`);
     result = result.replace(/\$CWD/g, escaped_cwd);
 
-    const resolve_dir = (d: string): string => {
-        // $NOTCWD is a regex-level macro — expand it directly, not as a path
-        if (d === "$NOTCWD") return `(?!${escaped_cwd}/)`;
-        const resolved = d.replace(/\$CWD/g, cwd);
-        return resolved.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    };
+    // Replace $SAFE and $UNSAFE with named capture groups.
+    // \b prevents matching inside other macro names.
+    // \/? consumes an optional trailing / (the directory separator in patterns).
+    let safe_idx = 0;
+    let unsafe_idx = 0;
 
-    if (safe_dirs && safe_dirs.length > 0) {
-        const escaped = safe_dirs.map(resolve_dir);
-        const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
-        result = result.replace(/\$SAFE/g, alt);
-    } else {
-        // Replace $SAFE with a pattern that never matches any real path
-        result = result.replace(/\$SAFE/g, "\\x00NOMATCH");
-    }
-
-    if (unsafe_dirs && unsafe_dirs.length > 0) {
-        const escaped = unsafe_dirs.map(resolve_dir);
-        const alt = escaped.length === 1 ? escaped[0] : `(${escaped.join("|")})`;
-        result = result.replace(/\$UNSAFE/g, alt);
-    } else {
-        result = result.replace(/\$UNSAFE/g, "\\x00NOMATCH");
-    }
+    result = result.replace(
+        /\$SAFE\b\/?/g,
+        () => `(?<__safe_${safe_idx++}__>\\S+)`,
+    );
+    result = result.replace(
+        /\$UNSAFE\b\/?/g,
+        () => `(?<__unsafe_${unsafe_idx++}__>\\S+)`,
+    );
 
     return result;
 }
 
-export function matches_rule(
-    rule: TrustRule,
+// ---------------------------------------------------------------------------
+// Rule and risk matching
+// ---------------------------------------------------------------------------
+
+/**
+ * Test whether a tool name + input matches a tool pattern + match conditions.
+ * Used by both matches_rule and find_matching_risks.
+ */
+function matches_tool_and_input(
+    tool_pattern: string,
+    match_patterns: Record<string, string> | undefined,
     tool_name: string,
     tool_input: Record<string, unknown>,
-    cwd: string,
-    safe_dirs?: string[],
-    unsafe_dirs?: string[],
+    ctx: EvalContext,
 ): boolean {
-    const tool_pattern = substitute_variables(rule.tool, cwd, safe_dirs, unsafe_dirs);
+    // Tool name matching — $CWD/$NOTCWD are substituted but no path validation
+    // (tool names don't contain filesystem paths)
+    const tool_substituted = substitute_variables(tool_pattern, ctx.cwd);
     try {
-        if (!new RegExp(`^(?:${tool_pattern})$`).test(tool_name)) {
+        if (!new RegExp(`^(?:${tool_substituted})$`).test(tool_name)) {
             return false;
         }
     } catch {
         return false;
     }
 
-    if (rule.match) {
-        for (const [param, pattern] of Object.entries(rule.match)) {
+    // Match pattern matching — uses exec() so we get capture groups for $SAFE/$UNSAFE
+    if (match_patterns) {
+        for (const [param, pattern] of Object.entries(match_patterns)) {
             const value = tool_input[param];
             if (value === undefined || value === null) {
                 return false;
             }
-            const substituted = substitute_variables(pattern, cwd, safe_dirs, unsafe_dirs);
+            const substituted = substitute_variables(pattern, ctx.cwd);
             try {
-                if (!new RegExp(substituted).test(String(value))) {
-                    return false;
-                }
+                const match = new RegExp(substituted).exec(String(value));
+                if (!match) return false;
+                if (!validate_path_captures(match, ctx)) return false;
             } catch {
                 return false;
             }
@@ -179,51 +322,39 @@ export function matches_rule(
     return true;
 }
 
+export function matches_rule(
+    rule: TrustRule,
+    tool_name: string,
+    tool_input: Record<string, unknown>,
+    ctx: EvalContext,
+): boolean {
+    return matches_tool_and_input(
+        rule.tool,
+        rule.match,
+        tool_name,
+        tool_input,
+        ctx,
+    );
+}
+
 export function find_matching_risks(
     risks: KnownRisk[],
     tool_name: string,
     tool_input: Record<string, unknown>,
-    cwd: string,
-    safe_dirs?: string[],
-    unsafe_dirs?: string[],
+    ctx: EvalContext,
 ): KnownRisk[] {
     const matched: KnownRisk[] = [];
     for (const risk of risks) {
-        const tool_pattern = substitute_variables(risk.tool, cwd, safe_dirs, unsafe_dirs);
-        try {
-            if (!new RegExp(`^(?:${tool_pattern})$`).test(tool_name)) {
-                continue;
-            }
-        } catch {
-            continue;
+        if (matches_tool_and_input(risk.tool, risk.match, tool_name, tool_input, ctx)) {
+            matched.push(risk);
         }
-
-        if (risk.match) {
-            let all_match = true;
-            for (const [param, pattern] of Object.entries(risk.match)) {
-                const value = tool_input[param];
-                if (value === undefined || value === null) {
-                    all_match = false;
-                    break;
-                }
-                const substituted = substitute_variables(pattern, cwd, safe_dirs, unsafe_dirs);
-                try {
-                    if (!new RegExp(substituted).test(String(value))) {
-                        all_match = false;
-                        break;
-                    }
-                } catch {
-                    all_match = false;
-                    break;
-                }
-            }
-            if (!all_match) continue;
-        }
-
-        matched.push(risk);
     }
     return matched;
 }
+
+// ---------------------------------------------------------------------------
+// Bash command splitting (unchanged)
+// ---------------------------------------------------------------------------
 
 export function split_bash_command(command: string): string[] {
     const commands: string[] = [];
@@ -541,14 +672,16 @@ function extract_subshell_commands(command: string): string[] {
     return results;
 }
 
+// ---------------------------------------------------------------------------
+// Core evaluation
+// ---------------------------------------------------------------------------
+
 function evaluate_single(
     all_rules: TrustRule[],
     known_risks: KnownRisk[],
     tool_name: string,
     tool_input: Record<string, unknown>,
-    cwd: string,
-    safe_dirs?: string[],
-    unsafe_dirs?: string[],
+    ctx: EvalContext,
 ): EvaluationResult {
     // Sort: highest priority first, deny before allow at same priority
     const sorted = [...all_rules].sort((a, b) => {
@@ -560,14 +693,12 @@ function evaluate_single(
 
     // Find first matching rule
     for (const rule of sorted) {
-        if (matches_rule(rule, tool_name, tool_input, cwd, safe_dirs, unsafe_dirs)) {
+        if (matches_rule(rule, tool_name, tool_input, ctx)) {
             const risk_warnings = find_matching_risks(
                 known_risks,
                 tool_name,
                 tool_input,
-                cwd,
-                safe_dirs,
-                unsafe_dirs,
+                ctx,
             );
 
             if (rule.action === "allow" && risk_warnings.length > 0) {
@@ -616,9 +747,7 @@ function evaluate_single(
         known_risks,
         tool_name,
         tool_input,
-        cwd,
-        safe_dirs,
-        unsafe_dirs,
+        ctx,
     );
 
     const risk_suffix =
@@ -634,6 +763,38 @@ function evaluate_single(
     };
 }
 
+/**
+ * Parse a cd sub-command and return the target directory, or null if
+ * the target cannot be determined (e.g. `cd -`).
+ */
+function extract_cd_target(sub_cmd: string): string | null {
+    if (sub_cmd === "cd") return homedir();
+
+    const m = sub_cmd.match(/^cd\s+(.+)/);
+    if (!m) return null;
+
+    let target = m[1].trim();
+
+    // Strip surrounding quotes
+    if (
+        (target.startsWith('"') && target.endsWith('"')) ||
+        (target.startsWith("'") && target.endsWith("'"))
+    ) {
+        target = target.slice(1, -1);
+    }
+
+    // cd - goes to previous directory — can't track
+    if (target === "-") return null;
+
+    // Expand ~
+    if (target === "~") return homedir();
+    if (target.startsWith("~/")) {
+        return join(homedir(), target.slice(2));
+    }
+
+    return target;
+}
+
 export function evaluate(
     policies: PoliciesFile,
     session_grants: TrustRule[],
@@ -642,8 +803,25 @@ export function evaluate(
     cwd: string,
 ): EvaluationResult {
     const all_rules = [...policies.rules, ...session_grants];
-    const safe_dirs = policies.safe_directories;
-    const unsafe_dirs = policies.unsafe_directories;
+
+    // Resolve directories once for the entire evaluation
+    const safe = resolve_directories(policies.safe_directories ?? [], cwd);
+    const unsafe = resolve_directories(policies.unsafe_directories ?? [], cwd);
+
+    let resolved_cwd: string;
+    try {
+        resolved_cwd = realpathSync(cwd);
+    } catch {
+        resolved_cwd = path_resolve(cwd);
+    }
+
+    const base_ctx: EvalContext = {
+        cwd,
+        effective_cwd: resolved_cwd,
+        resolved_cwd,
+        safe,
+        unsafe,
+    };
 
     // Special handling for Bash tool: evaluate each sub-command independently
     if (tool_name === "Bash" && typeof tool_input.command === "string") {
@@ -656,9 +834,7 @@ export function evaluate(
             policies.known_risks,
             tool_name,
             tool_input,
-            cwd,
-            safe_dirs,
-            unsafe_dirs,
+            base_ctx,
         );
         if (full_deny.decision === "deny" && full_deny.matched_rule) {
             return full_deny;
@@ -679,16 +855,30 @@ export function evaluate(
         const all_risks: KnownRisk[] = [];
         const once_grants: string[] = [];
 
+        // Track effective CWD through cd commands within this bash invocation.
+        // $CWD/$NOTCWD stay bound to the original cwd — only $SAFE/$UNSAFE
+        // path resolution uses the effective_cwd.
+        let effective_cwd = resolved_cwd;
+
         for (const sub_cmd of sub_commands) {
+            // Check if this sub-command is a cd — update effective_cwd for
+            // subsequent sub-commands (but not $CWD/$NOTCWD)
+            const cd_target = extract_cd_target(sub_cmd);
+            if (cd_target !== null) {
+                effective_cwd = path_resolve(effective_cwd, cd_target);
+            }
+
+            const sub_ctx: EvalContext = {
+                ...base_ctx,
+                effective_cwd,
+            };
             const sub_input = { ...tool_input, command: sub_cmd };
             const result = evaluate_single(
                 all_rules,
                 policies.known_risks,
                 tool_name,
                 sub_input,
-                cwd,
-                safe_dirs,
-                unsafe_dirs,
+                sub_ctx,
             );
 
             if (result.decision === "deny") {
@@ -740,8 +930,6 @@ export function evaluate(
         policies.known_risks,
         tool_name,
         tool_input,
-        cwd,
-        safe_dirs,
-        unsafe_dirs,
+        base_ctx,
     );
 }

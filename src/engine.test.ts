@@ -3,8 +3,13 @@ import {
     merge_policies_with_overlays,
     evaluate,
     split_bash_command,
+    substitute_variables,
+    matches_rule,
+    find_matching_risks,
+    resolve_directories,
 } from "./engine.js";
-import type { PoliciesFile, OverlayFile } from "./types.js";
+import type { EvalContext, ResolvedDirs } from "./engine.js";
+import type { PoliciesFile, OverlayFile, TrustRule, KnownRisk } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -417,5 +422,350 @@ describe("split_bash_command", () => {
         const result = split_bash_command("echo `whoami`");
         expect(result).toContain("echo `whoami`");
         expect(result).toContain("whoami");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for directory handling tests
+// ---------------------------------------------------------------------------
+
+function make_ctx(overrides?: Partial<EvalContext>): EvalContext {
+    return {
+        cwd: "/home/user/project",
+        effective_cwd: "/home/user/project",
+        resolved_cwd: "/home/user/project",
+        safe: { dirs: ["/home/user/project", "/tmp"], has_notcwd: false },
+        unsafe: { dirs: [], has_notcwd: true },
+        ...overrides,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// resolve_directories
+// ---------------------------------------------------------------------------
+
+describe("resolve_directories", () => {
+    it("expands $CWD to concrete path", () => {
+        const result = resolve_directories(["$CWD", "/tmp"], "/home/user/project");
+        expect(result.dirs).toContain("/home/user/project");
+        expect(result.dirs).toContain("/tmp");
+        expect(result.has_notcwd).toBe(false);
+    });
+
+    it("tracks $NOTCWD as a flag", () => {
+        const result = resolve_directories(["$NOTCWD"], "/home/user/project");
+        expect(result.has_notcwd).toBe(true);
+        expect(result.dirs).toHaveLength(0);
+    });
+
+    it("skips entries with unresolved macros", () => {
+        const result = resolve_directories(["$UNKNOWN_MACRO"], "/home/user");
+        expect(result.dirs).toHaveLength(0);
+    });
+
+    it("deduplicates resolved dirs", () => {
+        const result = resolve_directories(["$CWD", "/home/user/project"], "/home/user/project");
+        const occurrences = result.dirs.filter((d) => d === "/home/user/project");
+        expect(occurrences.length).toBe(1);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// substitute_variables — capture groups
+// ---------------------------------------------------------------------------
+
+describe("substitute_variables capture groups", () => {
+    it("replaces $CWD with escaped cwd", () => {
+        const result = substitute_variables("^$CWD/", "/home/user/project");
+        expect(result).toContain("/home/user/project");
+        expect(result).not.toContain("$CWD");
+    });
+
+    it("replaces $NOTCWD with negative lookahead", () => {
+        const result = substitute_variables("^$NOTCWD", "/home/user");
+        expect(result).toMatch(/\(\?!/);
+    });
+
+    it("replaces $SAFE/ with a named capture group", () => {
+        const result = substitute_variables("^$SAFE/", "/home/user");
+        expect(result).toMatch(/\(\?<__safe_0__>/);
+        // The trailing / should be consumed — no literal / after the group
+        expect(result).not.toMatch(/\\S\+\)\//);
+    });
+
+    it("replaces $UNSAFE/ with a named capture group", () => {
+        const result = substitute_variables("^$UNSAFE/", "/home/user");
+        expect(result).toMatch(/\(\?<__unsafe_0__>/);
+    });
+
+    it("handles multiple $SAFE references with unique names", () => {
+        const result = substitute_variables("$SAFE/ and $SAFE/", "/home/user");
+        expect(result).toContain("__safe_0__");
+        expect(result).toContain("__safe_1__");
+    });
+
+    it("does not match $SAFETY when replacing $SAFE", () => {
+        const result = substitute_variables("$SAFETY/foo", "/home/user");
+        // $SAFETY should remain untouched since \b prevents matching
+        expect(result).toContain("$SAFETY");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// matches_rule — $SAFE semantic validation
+// ---------------------------------------------------------------------------
+
+describe("matches_rule with $SAFE", () => {
+    const write_safe_rule: TrustRule = {
+        id: "allow-write-safe",
+        tool: "Write",
+        match: { file_path: "^$SAFE/" },
+        action: "allow",
+        priority: 70,
+        description: "Allow writes in safe dirs",
+    };
+
+    it("matches file_path under a safe directory", () => {
+        const ctx = make_ctx();
+        const result = matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/home/user/project/src/foo.ts" }, ctx,
+        );
+        expect(result).toBe(true);
+    });
+
+    it("matches file_path under /tmp (also safe)", () => {
+        const ctx = make_ctx();
+        const result = matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/tmp/scratch.txt" }, ctx,
+        );
+        expect(result).toBe(true);
+    });
+
+    it("rejects file_path outside safe directories", () => {
+        const ctx = make_ctx();
+        const result = matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/etc/passwd" }, ctx,
+        );
+        expect(result).toBe(false);
+    });
+
+    it("rejects when no safe dirs configured", () => {
+        const ctx = make_ctx({ safe: { dirs: [], has_notcwd: false } });
+        const result = matches_rule(
+            write_safe_rule, "Write",
+            { file_path: "/tmp/foo" }, ctx,
+        );
+        expect(result).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// matches_rule — $UNSAFE semantic validation
+// ---------------------------------------------------------------------------
+
+describe("matches_rule with $UNSAFE (has_notcwd)", () => {
+    const deny_unsafe_rule: TrustRule = {
+        id: "deny-write-unsafe",
+        tool: "Write",
+        match: { file_path: "^$UNSAFE/" },
+        action: "deny",
+        priority: 90,
+        description: "Deny writes in unsafe dirs",
+    };
+
+    it("matches file_path outside CWD when has_notcwd", () => {
+        const ctx = make_ctx();
+        const result = matches_rule(
+            deny_unsafe_rule, "Write",
+            { file_path: "/etc/passwd" }, ctx,
+        );
+        expect(result).toBe(true);
+    });
+
+    it("does not match file_path inside CWD", () => {
+        const ctx = make_ctx();
+        const result = matches_rule(
+            deny_unsafe_rule, "Write",
+            { file_path: "/home/user/project/src/foo.ts" }, ctx,
+        );
+        expect(result).toBe(false);
+    });
+
+    it("matches when path is under an explicit unsafe dir", () => {
+        const ctx = make_ctx({
+            unsafe: { dirs: ["/var/secrets"], has_notcwd: false },
+        });
+        const result = matches_rule(
+            deny_unsafe_rule, "Write",
+            { file_path: "/var/secrets/key.pem" }, ctx,
+        );
+        expect(result).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// matches_rule — bash commands with $SAFE
+// ---------------------------------------------------------------------------
+
+describe("matches_rule with bash $SAFE commands", () => {
+    const cp_safe_rule: TrustRule = {
+        id: "allow-cp-safe",
+        tool: "Bash",
+        match: { command: "^(cp|mv)\\b.* $SAFE/" },
+        action: "allow",
+        priority: 60,
+        description: "Allow cp/mv to safe dirs",
+    };
+
+    it("allows cp to a safe directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo.txt /tmp/bar.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("allows mv to project directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "mv old.txt /home/user/project/new.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects cp to unsafe directory", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo.txt /etc/bar.txt" }, ctx,
+        )).toBe(false);
+    });
+
+    it("resolves relative path against effective_cwd", () => {
+        const ctx = make_ctx({ effective_cwd: "/tmp" });
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp foo.txt bar.txt" }, ctx,
+        )).toBe(true);
+    });
+
+    it("resolves .. traversal paths", () => {
+        const ctx = make_ctx({ effective_cwd: "/home/user/project/src" });
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp x ../foo" }, ctx,
+        )).toBe(true);
+    });
+
+    it("rejects .. traversal that escapes safe dirs", () => {
+        const ctx = make_ctx();
+        expect(matches_rule(
+            cp_safe_rule, "Bash",
+            { command: "cp x ../../etc/passwd" }, ctx,
+        )).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// evaluate — cd tracking
+// ---------------------------------------------------------------------------
+
+describe("evaluate cd tracking", () => {
+    function make_cd_policies(): PoliciesFile {
+        return {
+            version: 2,
+            rules: [
+                {
+                    id: "allow-cd",
+                    tool: "Bash",
+                    match: { command: "^cd\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow cd",
+                },
+                {
+                    id: "allow-cp-safe",
+                    tool: "Bash",
+                    match: { command: "^(cp|mv)\\b.* $SAFE/" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow cp/mv to safe dirs",
+                },
+                {
+                    id: "allow-ls",
+                    tool: "Bash",
+                    match: { command: "^ls\\b" },
+                    action: "allow",
+                    priority: 60,
+                    description: "Allow ls",
+                },
+            ],
+            known_risks: [],
+            safe_directories: ["$CWD", "/tmp"],
+            unsafe_directories: ["$NOTCWD"],
+        };
+    }
+
+    it("allows cp with relative path after cd to safe dir", () => {
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: "cd /tmp && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        expect(result.decision).toBe("allow");
+    });
+
+    it("denies cp with relative path after cd to unsafe dir", () => {
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: "cd /etc && cp foo.txt bar.txt" },
+            "/home/user/project",
+        );
+        expect(result.decision).toBe("deny");
+    });
+
+    it("$CWD does not change with cd (stays bound to original)", () => {
+        const result = evaluate(
+            make_cd_policies(), [], "Bash",
+            { command: "cd / && cp foo.txt /etc/passwd" },
+            "/home/user/project",
+        );
+        expect(result.decision).toBe("deny");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Rules without $SAFE/$UNSAFE (regression)
+// ---------------------------------------------------------------------------
+
+describe("rules without $SAFE/$UNSAFE (regression)", () => {
+    it("plain regex rules match normally", () => {
+        const rule: TrustRule = {
+            id: "allow-ls",
+            tool: "Bash",
+            match: { command: "^ls\\b" },
+            action: "allow",
+            priority: 60,
+            description: "Allow ls",
+        };
+        const ctx = make_ctx();
+        expect(matches_rule(rule, "Bash", { command: "ls -la" }, ctx)).toBe(true);
+        expect(matches_rule(rule, "Bash", { command: "rm foo" }, ctx)).toBe(false);
+    });
+
+    it("tool-only rules (no match) still work", () => {
+        const rule: TrustRule = {
+            id: "allow-read",
+            tool: "Read|Glob|Grep",
+            action: "allow",
+            priority: 80,
+            description: "Allow read tools",
+        };
+        const ctx = make_ctx();
+        expect(matches_rule(rule, "Read", {}, ctx)).toBe(true);
+        expect(matches_rule(rule, "Write", {}, ctx)).toBe(false);
     });
 });
